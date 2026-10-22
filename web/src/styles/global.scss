@@ -1,0 +1,115 @@
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+html {
+  font-size: 4px; // * 1rem = 4px  方便unocss计算：在unocss中 1字体单位 = 0.25rem，相当于 1等份 = 1px
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  font-size: 16px;
+  font-family:
+    'Noto Sans SC',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    'Helvetica Neue',
+    Arial,
+    'PingFang SC',
+    'Microsoft YaHei',
+    sans-serif;
+}
+
+#app {
+  width: 100%;
+  height: 100%;
+  font-family: inherit;
+}
+
+/* 圆形头像：避免 overflow+radius 在 Windows/Chrome 上被栅格化发糊。
+ * Naive 2.34 的 round 只设 --n-border-radius，没有 n-avatar--round；
+ * css-render 后注入，需用 #app 提高优先级盖过 .n-avatar { overflow: hidden }。 */
+#app .n-avatar {
+  flex-shrink: 0;
+  overflow: visible;
+  clip-path: circle(50% at 50% 50%);
+}
+
+#app .n-avatar img,
+.layout-sider-user-avatar {
+  display: block;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+  image-rendering: -webkit-optimize-contrast;
+}
+
+#app .n-avatar img {
+  border-radius: 50%;
+}
+
+.layout-sider-user-avatar {
+  clip-path: circle(50% at 50% 50%);
+}
+
+/* transition fade-slide */
+.fade-slide-leave-active,
+.fade-slide-enter-active {
+  transition: all 0.3s;
+}
+
+.fade-slide-enter-from {
+  opacity: 0;
+  transform: translateX(-30px);
+}
+
+.fade-slide-leave-to {
+  opacity: 0;
+  transform: translateX(30px);
+}
+
+/* 自定义滚动条样式 */
+.cus-scroll {
+  overflow: auto;
+  &::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+}
+.cus-scroll-x {
+  overflow-x: auto;
+  &::-webkit-scrollbar {
+    width: 0;
+    height: 8px;
+  }
+}
+.cus-scroll-y {
+  overflow-y: auto;
+  &::-webkit-scrollbar {
+    width: 8px;
+    height: 0;
+  }
+}
+.cus-scroll,
+.cus-scroll-x,
+.cus-scroll-y {
+  &::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    border-radius: 4px;
+  }
+  &:hover {
+    &::-webkit-scrollbar-thumb {
+      background: #bfbfbf;
+    }
+    &::-webkit-scrollbar-thumb:hover {
+      background: var(--primary-color);
+    }
+  }
+}
