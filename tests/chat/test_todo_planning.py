@@ -93,8 +93,13 @@ class TodoAssemblyTests(TestCase):
             with mock.patch.object(
                 agent_service, "_approval_tools_map", return_value={"workspace_run_command": True}
             ):
+                # patch 的必须是**生产代码真正用的那个名字**（app.chat.approval 里的
+                # SafeCommandAwareHITL）。原先 patch 的是 langchain 模块里的类名，
+                # 在 U7-只读白名单把装配改成子类后就打空了；更糟的是它会污染
+                # 首次导入：如果 app.chat.approval 恰好在此 patch 期间被导入，
+                # 类会继承到 Mock —— 单跑通过、全量跑报 StopIteration。
                 with mock.patch(
-                    "langchain.agents.middleware.HumanInTheLoopMiddleware",
+                    "app.chat.approval.SafeCommandAwareHITL",
                     side_effect=RuntimeError("boom"),
                 ):
                     with mock.patch(

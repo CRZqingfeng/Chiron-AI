@@ -534,10 +534,22 @@ def build_model_and_agent(
         middlewares.append(strip_mw)
     if interrupt_on and checkpointer is not None:
         try:
-            from langchain.agents.middleware import HumanInTheLoopMiddleware
+            from app.chat.approval import SafeCommandAwareHITL
 
+            mw_cls = (
+                SafeCommandAwareHITL
+                if getattr(settings, "CHAT_APPROVAL_SAFE_COMMANDS_ENABLED", True)
+                else None
+            )
+            if mw_cls is None:
+                from langchain.agents.middleware import HumanInTheLoopMiddleware
+
+                mw_cls = HumanInTheLoopMiddleware
+
+            # 只读命令免确认由 middleware 子类判定（按参数，不是按工具名），
+            # 关掉开关即退回「所有命令都中断」的原行为。
             middlewares.append(
-                HumanInTheLoopMiddleware(
+                mw_cls(
                     interrupt_on=interrupt_on,
                     description_prefix="以下工具需要你的确认才会执行",
                 )

@@ -182,6 +182,11 @@ class Settings(BaseSettings):
     CHAT_CHECKPOINT_POOL_SIZE: int = 2
     # 需要人工审批的工具名（逗号分隔）。留空=没有工具需要审批。
     CHAT_APPROVAL_TOOLS: str = "workspace_run_command"
+    # 只读命令免确认：`ls` / `cat` / `git status` 这类**可证明只读**的命令不再弹卡片。
+    # 判定在 `app/workspace/command_policy.py`（元字符全拒 + 二进制白名单 + 危险参数
+    # + 不许离开工作区）。关掉即回到「所有命令都要点一次」的旧行为。
+    # 为什么默认开：每看一次目录都点一次确认，用户最终会把审批整体关掉，那更危险。
+    CHAT_APPROVAL_SAFE_COMMANDS_ENABLED: bool = True
     # checkpoint 线程保留天数；0=不清理。审批恢复必须在同一次用户会话内完成，
     # 用户通常几分钟内就点确认，故 1 天足够（比快照表的 2 天更短）。
     CHAT_CHECKPOINT_RETENTION_DAYS: int = 1
