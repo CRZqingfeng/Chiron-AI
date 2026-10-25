@@ -115,5 +115,55 @@ class MemoryInjectTests(unittest.TestCase):
         self.assertIsNone(out)
 
 
+class InjectSourceLabelTests(unittest.TestCase):
+    """注入来源的标注必须如实。
+
+    背景（A-025 真实数据暴露）：U7 之后 `inj` 可能只有「长期记忆」一段——全新会话
+    没有任何被归档的轮次。但思考区原来写死「会话记忆预注入 / 已附加较早轮次摘录」，
+    于是用户在一个刚开的会话里看到「已附加较早轮次摘录」，会以为系统在编。
+    """
+
+    def test_long_term_only(self):
+        from app.chat.memory_search import (
+            LONG_TERM_INJECT_MARK,
+            format_user_memory_hits,
+            inject_sources,
+        )
+
+        text = format_user_memory_hits(
+            [{"id": 1, "text": "主力数据库是 MySQL", "mem_key": "db", "kind": "fact"}]
+        )
+        self.assertIn(LONG_TERM_INJECT_MARK, text)
+        self.assertEqual(inject_sources(text), ["长期记忆"])
+
+    def test_both_sources_are_reported(self):
+        from app.chat.memory_search import (
+            LONG_TERM_INJECT_MARK,
+            SESSION_EXCERPT_INJECT_MARK,
+            inject_sources,
+        )
+
+        text = f"{LONG_TERM_INJECT_MARK}事实\n\n{SESSION_EXCERPT_INJECT_MARK}\n[1] 轮次 3：原话"
+        self.assertEqual(inject_sources(text), ["长期记忆", "本会话较早摘录"])
+
+    def test_empty_text_has_no_source(self):
+        from app.chat.memory_search import inject_sources
+
+        self.assertEqual(inject_sources(""), [])
+        self.assertEqual(inject_sources(None), [])  # type: ignore[arg-type]
+
+    def test_label_never_hardcodes_session_excerpt(self):
+        """守死文案：源码里不该再出现写死「已附加较早轮次摘录」。"""
+        from pathlib import Path as _P
+
+        src = _P("app/chat/agent_service.py").read_text(encoding="utf-8")
+        self.assertNotIn(
+            "已附加较早轮次摘录",
+            src,
+            "注入标签必须由 inject_sources() 决定，不能写死——"
+            "全新会话里只有长期记忆时，这句话是假的",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

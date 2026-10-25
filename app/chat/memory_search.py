@@ -203,12 +203,41 @@ def proactive_session_memory_inject_text(
         return None
 
     #4. 格式化输出
+    # 显式加标记：U7 起注入了「长期记忆」和「本会话摘录」两段不同来源，
+    # 模型需要分得清哪段是原话、哪段是提炼过的事实；思考区也靠这个标记如实显示。
     lines: list[str] = []
     for i, h in enumerate(hits, 1):
         ti = h.get("turn_index", "")
         tx = (h.get("text") or "").strip()
         lines.append(f"[{i}] 轮次 {ti}：\n{tx}")
-    return "\n\n".join(lines)
+    return SESSION_EXCERPT_INJECT_MARK + "\n" + "\n\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 注入来源标记：思考区据此如实显示「注入了什么」，而不是写死一句话
+# ---------------------------------------------------------------------------
+
+LONG_TERM_INJECT_MARK = "【长期记忆】"
+SESSION_EXCERPT_INJECT_MARK = "【本会话较早摘录】"
+
+
+def inject_sources(text: str) -> list[str]:
+    """判断一次注入里含哪几段来源，供思考区显示。
+
+    为什么需要：U7 把两段不同来源拼成一次注入（会话级原话摘录 + 用户级提炼事实），
+    如果思考区统一写「会话记忆预注入 / 已附加较早轮次摘录」，在**全新会话**里就会
+    显示一件根本不存在的事——新会话没有任何被归档的轮次，用户会以为系统在编。
+    标签必须由实际内容决定，不能由调用点猜。
+
+    :return: 例 ["长期记忆"] / ["本会话较早摘录"] / 两者都有时两段
+    """
+    t = text or ""
+    srcs: list[str] = []
+    if LONG_TERM_INJECT_MARK in t:
+        srcs.append("长期记忆")
+    if SESSION_EXCERPT_INJECT_MARK in t:
+        srcs.append("本会话较早摘录")
+    return srcs
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +334,7 @@ def format_user_memory_hits(hits: list[dict[str, Any]]) -> str:
     """把命中条目格式化成给模型看的文本。"""
     if not hits:
         return ""
-    lines = ["[长期记忆] 以下是关于这位用户/这个项目、在以往会话中确认过的事实："]
+    lines = [LONG_TERM_INJECT_MARK + "以下是关于这位用户/这个项目、在以往会话中确认过的事实："]
     for i, h in enumerate(hits, 1):
         lines.append(f"[{i}]（{h.get('kind')}）{h.get('text')}")
     return "\n".join(lines)
