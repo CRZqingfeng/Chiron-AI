@@ -7,7 +7,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from app.chat.tools import (
+from app.core.turn_runtime import (
     _set_last_rag_context,
     emit_rag_step,
     log_kb_tool_return_to_terminal,
@@ -32,7 +32,7 @@ def make_search_knowledge_tool(
         query: str = Field(description="用于检索的自然语言问题或关键词，应与用户意图一致。")
 
     def _search_knowledge_base(query: str) -> str:
-        from app.chat.tools import (
+        from app.core.turn_runtime import (
             is_knowledge_allowed_this_turn,
             knowledge_disabled_this_turn_msg,
             try_acquire_knowledge_tool_slot,

@@ -21,7 +21,7 @@ from app.chat.agent_service import (
     _prepare_to_invoke_messages,
     _should_run_vision_caption,
 )
-from app.chat.message_codec import _prepare_vision_image_bytes, strip_image_urls_after_tools
+from app.core.message_codec import _prepare_vision_image_bytes, strip_image_urls_after_tools
 from app.chat.vision_caption import _CAPTION_SYSTEM_PROMPT
 
 

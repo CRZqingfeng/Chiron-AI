@@ -13,12 +13,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import app.chat.storage as storage_mod
-from app.chat.db_models import ChatMessage as ChatMessageRow
-from app.chat.db_models import ChatSession as ChatSessionRow
+from app.core.db_models import ChatMessage as ChatMessageRow
+from app.core.db_models import ChatSession as ChatSessionRow
 
 
 class _MemoryCache:
-    """Redis 不可用时的内存桩：接口与 app.chat.cache.cache 用到的子集一致。"""
+    """Redis 不可用时的内存桩：接口与 app.core.cache.cache 用到的子集一致。"""
 
     def __init__(self):
         self._d = {}

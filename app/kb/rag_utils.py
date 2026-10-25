@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Tuple
 
 import requests
-from langchain.chat_models import init_chat_model
 from loguru import logger
 
 from app.core import object_storage as obs
@@ -22,7 +21,7 @@ from app.kb.milvus_client import (
 )
 from app.kb.parent_chunk_store import ParentChunkStore
 from app.settings import settings
-from app.utils.egress import pinned_llm_client_kwargs
+from app.utils.llm_factory import LlmFactory
 
 _multimodal_embedding_service = get_multimodal_embedding_service()
 _milvus_manager = MilvusManager()
@@ -462,17 +461,8 @@ def _chat_from_config(llm_config: dict | None, temperature: float = 0.2):
     :param temperature: 温度
     :return: 聊天模型
     """
-    if not llm_config or not (llm_config.get("api_key") or "").strip():
-        return None
-    return init_chat_model(
-        model=llm_config.get("model_name") or "gpt-4",
-        model_provider="openai",
-        api_key=(llm_config.get("api_key") or "").strip(),
-        base_url=(llm_config.get("base_url") or "").strip() or None,
-        temperature=temperature,
-        stream_usage=True,
-        **pinned_llm_client_kwargs((llm_config.get("base_url") or "").strip() or None),
-    )
+    # 缺 Key 时返回 None（try_chat 内部判空），调用方据此跳过 HyDE/step-back
+    return LlmFactory.try_chat(llm_config, temperature=temperature, stream_usage=True)
 
 
 def _generate_step_back_question(query: str, llm_config: dict | None) -> str:

@@ -1,6 +1,6 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { getToken } from '@/utils'
-import { applyThinkingItem } from '@/utils/agentChatThinking'
+import { applyThinkingItem, upsertTodoItem } from '@/utils/agentChatThinking'
 import { useAgentSidebarStore, useRecentAgentsStore } from '@/store'
 
 const PENDING_JOB_PREFIX = 'chiron_ai_chat_job_'
@@ -175,7 +175,24 @@ export function useChatJobStream({
 
   function applyChatSsePayload(data, idx) {
     if (idx === -1) return
-    if (data.type === 'content') {
+    if (data.type === 'resume_snapshot') {
+      // 后端在 Redis 事件流丢失（重启/过期）后，用 PG 快照整体恢复已生成的内容。
+      // 这里必须"整体替换"而不是追加：本地可能已有部分内容，快照才是权威状态。
+      // kind === 'snapshot' 说明只恢复到中途断点，给用户一句说明。
+      const row = messages.value[idx]
+      messages.value[idx] = {
+        ...row,
+        content: data.content || '',
+        pending: false,
+        queuedWaiting: undefined,
+        mcpExecuting: false,
+        thinkingOpen: row.thinkingOpen ?? false,
+        ragTrace: row.ragTrace ?? null,
+        errorText:
+          data.kind === 'snapshot' ? '连接中断，以上为已生成的部分内容' : undefined,
+      }
+      flushRenderVersion(messages.value[idx])
+    } else if (data.type === 'content') {
       const row = messages.value[idx]
       const resumed = !!row.mcpExecuting
       messages.value[idx] = {
@@ -208,6 +225,19 @@ export function useChatJobStream({
         patch.pending = true
       }
       messages.value[idx] = patch
+    } else if (data.type === 'todo_list') {
+      // U9a 规划清单：整表替换（与后端 write_todos 语义一致）。
+      // 不另存 msg.todos，而是就地 upsert 一条 type=todo 的思考区项——
+      // 这样实时渲染与历史回放（DB 里 thinking_items 的终态）走同一套模板，
+      // 不会出现「流式时一个样、刷新后另一个样」。
+      const cur = messages.value[idx]
+      messages.value[idx] = {
+        ...cur,
+        thinkingItems: upsertTodoItem(cur.thinkingItems, data.todos),
+        thinkingOpen: true,
+        pending: cur.pending,
+        queuedWaiting: undefined,
+      }
     } else if (data.type === 'trace') {
       const cur = messages.value[idx]
       messages.value[idx] = {
@@ -257,6 +287,34 @@ export function useChatJobStream({
         mcpConfirmations: list,
         pending: cur.pending,
       }
+    } else if (data.type === 'approval_required') {
+      // 工具审批中断：图停在「模型已产出 tool_calls、工具尚未执行」的位置。
+      // 与 MCP 的 mcpConfirmations 分开存：两者字段结构完全不同
+      // （这里是 interrupt_id + actions[]，MCP 是 pending_id + args_preview），
+      // 合并会让模板到处是 if 分支。
+      const cur = messages.value[idx]
+      const req = data.request || {}
+      const actions = Array.isArray(req.actions) ? req.actions : []
+      if (!actions.length) return
+      messages.value[idx] = {
+        ...cur,
+        approvalPending: {
+          interruptId: req.interrupt_id || null,
+          actions,
+          allowedDecisions: Array.isArray(req.allowed_decisions)
+            ? req.allowed_decisions
+            : ['approve', 'reject'],
+          // 恢复时要指回原 checkpoint。messageId 要等 done 事件才有
+          // （消息在本轮收尾时才落库），先留 null，done 分支补。
+          threadId: data.thread_id || cur.approvalPending?.threadId || null,
+          messageId: cur.approvalPending?.messageId ?? null,
+        },
+        // 停掉转圈：这一轮不会再有内容产出，等用户决定
+        pending: false,
+        mcpExecuting: false,
+        thinkingOpen: cur.thinkingOpen ?? false,
+      }
+      flushRenderVersion(messages.value[idx])
     } else if (data.type === 'queued') {
       // 并发闸门排队提示：生成开始前先收到该事件
       const cur = messages.value[idx]
@@ -267,12 +325,21 @@ export function useChatJobStream({
       }
     } else if (data.type === 'done') {
       const row = messages.value[idx]
-      messages.value[idx] = {
+      const patch = {
         ...row,
         pending: false,
         mcpExecuting: false,
         stoppedByUser: data.cancelled ? true : row.stoppedByUser,
       }
+      // 中断收尾时后端才把那条「待确认」消息落库，因此 message_id 只能在 done 里拿到。
+      // 恢复接口要用它作 target_message_id（精准定位、原地更新），缺了就点不动按钮。
+      if (data.interrupted && row.approvalPending) {
+        patch.approvalPending = {
+          ...row.approvalPending,
+          messageId: data.message_id ?? row.approvalPending.messageId ?? null,
+        }
+      }
+      messages.value[idx] = patch
       flushRenderVersion(messages.value[idx])
     }
   }
@@ -389,6 +456,8 @@ export function useChatJobStream({
     assistantIdx,
     mcpApprovedPendingId = null,
     targetMessageId = null,
+    resumeThreadId = null,
+    resumeDecision = null,
   }) {
     let jobId
     let startSeq = 0
@@ -416,6 +485,10 @@ export function useChatJobStream({
             regenerate,
             target_message_id: targetMessageId || undefined,
             mcp_approved_pending_id: mcpApprovedPendingId || undefined,
+            // 审批恢复：thread 指向原 job 的 checkpoint，decision 决定批准/拒绝。
+            // 后端据此走 `Command(resume=...)`，不会重复已完成的步骤。
+            resume_thread_id: resumeThreadId || undefined,
+            resume_decision: resumeDecision || undefined,
           }),
           signal: ac.signal,
         })
@@ -595,7 +668,9 @@ export function useChatJobStream({
       if (
         pj.regenerate &&
         !streamStoppedByUser.value &&
-        !messages.value[idx]?.mcpConfirmations?.length
+        !messages.value[idx]?.mcpConfirmations?.length &&
+        // 审批待确认时不能重拉：历史行会覆盖掉刚广播进来的 approvalPending
+        !messages.value[idx]?.approvalPending
       ) {
         await reloadSessionMessages(agentId)
       }

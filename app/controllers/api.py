@@ -45,7 +45,7 @@ class ApiController(CRUDBase[Api, ApiCreate, ApiUpdate]):
         super().__init__(model=Api)
 
     async def refresh_api(self):
-        from app import app
+        from app.main import app
 
         # 收集所有有鉴权的 API（含路由自身 dependencies 与 include_router 挂载的依赖）
         all_api_list = []

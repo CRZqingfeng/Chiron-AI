@@ -14,7 +14,7 @@ from typing import Any
 
 from loguru import logger
 
-from app.chat.cache import cache
+from app.core.cache import cache
 from app.kb.kb_service import (
     KbUploadTaskCancelled,
     KbUploadTaskGuard,
@@ -211,7 +211,7 @@ def _run_upload_thread(
             error_type="timeout",
         )
     except Exception as e:  # noqa: BLE001
-        logger.exception("知识库上传任务失败 task_id=%s filename=%r", task_id, display_filename)
+        logger.exception("知识库上传任务失败 task_id={} filename={!r}", task_id, display_filename)
         _update_meta(task_id, identity, status="failed", error=str(e), error_type="failed")
     finally:
         cache.delete(_cancel_key(task_id))

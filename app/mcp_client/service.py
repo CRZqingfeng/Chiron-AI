@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+
+from app.chat.tool_registry import BUILTIN_TOOL_NAMES as _BUILTIN_TOOL_NAMES
+from app.chat.tool_registry import RESERVED_TOOL_NAMES as _RESERVED_TOOL_NAMES
 from app.mcp_client.tool_policy import wrap_mcp_tool_with_confirmation
 from typing import Any
 
@@ -13,18 +16,11 @@ MCP_TOOL_SCHEMA_TTL_SECONDS = 120
 
 logger = logging.getLogger(__name__)
 
-# 内置工具名集合：MCP 工具与之撞名时跳过（保留内置实现）
-_BUILTIN_TOOL_NAMES = {
-    "search_knowledge_base",
-    "search_knowledge_by_image",
-    "search_session_memory",
-    "search_session_attachment",
-    "read_session_attachment",
-    "list_session_attachments_brief",
-    "web_search",
-    "fetch_url",
-    "web_image_search",
-}
+# 关于 `_BUILTIN_TOOL_NAMES`：内置工具名集合，MCP 工具与之撞名时跳过（保留内置实现）。
+#
+# 这里**不再自己维护清单**——原先硬编码的那份漏了 4 个 workspace_* 工具，
+# 导致 MCP 可以顶替内置实现且不报错（见 app/chat/tool_registry.py 的说明）。
+# 现由注册表派生，新增内置工具只需在 TOOL_SPECS 加一行。
 
 
 def decrypt_headers(headers_ciphertext: str | None) -> dict[str, str]:
@@ -60,7 +56,7 @@ def mcp_tool_schema_cache_key(agent_id: int, server_id: int) -> str:
 
 
 def invalidate_mcp_tool_schema_cache(agent_id: int, server_id: int) -> None:
-    from app.chat.cache import cache
+    from app.core.cache import cache
 
     cache.delete(mcp_tool_schema_cache_key(agent_id, server_id))
 
@@ -214,7 +210,7 @@ async def load_agent_mcp_tools(
     单个服务连接失败仅记录错误、不中断对话；工具名与内置工具或彼此冲突时跳过。
     :return: (tools, errors)；errors 元素 {"name": 服务名, "error": 错误说明}
     """
-    from app.chat.cache import cache
+    from app.core.cache import cache
     from app.models.user_agent_mcp import UserAgentMcpServer
 
     rows = await UserAgentMcpServer.filter(agent_id=agent_id, enabled=True).all()
@@ -223,7 +219,7 @@ async def load_agent_mcp_tools(
 
     all_tools: list = []
     errors: list[dict] = []
-    seen_names: set[str] = set(_BUILTIN_TOOL_NAMES)
+    seen_names: set[str] = set(_BUILTIN_TOOL_NAMES) | set(_RESERVED_TOOL_NAMES)
 
     for row in rows:
         schema_key = mcp_tool_schema_cache_key(agent_id, row.id)

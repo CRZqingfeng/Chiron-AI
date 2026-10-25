@@ -6,7 +6,7 @@ import asyncio
 import unittest
 from unittest import mock
 
-from app.chat.cache import RedisCache
+from app.core.cache import RedisCache
 
 
 class _FakeRedis:

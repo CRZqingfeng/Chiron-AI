@@ -6,7 +6,7 @@ import asyncio
 import json
 import unittest
 
-from app.chat.cache import RedisCache
+from app.core.cache import RedisCache
 
 
 class _FakeRedis:

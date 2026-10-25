@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.chat.compact import load_compact_states, match_compact_state
-from app.chat.memory_turns import group_turn_pairs, turn_keys_of
+from app.core.memory_turns import group_turn_pairs, turn_keys_of
 from app.chat.milvus_memory import memory_filter_expr
 from app.chat.storage import ConversationStorage
 

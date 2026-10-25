@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.chat.cache import RedisCache
+from app.core.cache import RedisCache
 from app.utils import refresh_tokens as rt
 
 

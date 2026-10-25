@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, List, Literal, NotRequired, Optional, Tuple, TypedDict
 
-from langchain.chat_models import init_chat_model
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
@@ -14,7 +13,7 @@ from app.kb.rag_utils import (
     step_back_expand,
 )
 from app.settings import settings
-from app.utils.egress import pinned_llm_client_kwargs
+from app.utils.llm_factory import LlmFactory
 
 
 class ChunkRating(BaseModel):
@@ -77,17 +76,8 @@ def _grader_model(llm_config: dict[str, Any] | None):
     if not llm_config or not (llm_config.get("api_key") or "").strip():
         return None
     grade_model = (getattr(settings, "RAG_GRADE_MODEL", None) or "").strip() or None
-    name = grade_model or (llm_config.get("model_name") or "gpt-4")
-    return init_chat_model(
-        model=name,
-        model_provider="openai",
-        api_key=(llm_config.get("api_key") or "").strip(),
-        base_url=(llm_config.get("base_url") or "").strip() or None,
-        temperature=0,
-        # Avoid empty/malformed tool-call payloads with OpenAI-compatible gateways (e.g. DashScope).
-        stream_usage=False,
-        **pinned_llm_client_kwargs((llm_config.get("base_url") or "").strip() or None),
-    )
+    # 模型名可被 RAG_GRADE_MODEL 覆盖；是否缺 Key 由 try_chat 判定
+    return LlmFactory.try_chat(llm_config, model_name=grade_model)
 
 
 def _router_model(llm_config: dict[str, Any] | None):
@@ -98,15 +88,7 @@ def _router_model(llm_config: dict[str, Any] | None):
     """
     if not llm_config or not (llm_config.get("api_key") or "").strip():
         return None
-    return init_chat_model(
-        model=llm_config.get("model_name") or "gpt-4",
-        model_provider="openai",
-        api_key=(llm_config.get("api_key") or "").strip(),
-        base_url=(llm_config.get("base_url") or "").strip() or None,
-        temperature=0,
-        stream_usage=False,
-        **pinned_llm_client_kwargs((llm_config.get("base_url") or "").strip() or None),
-    )
+    return LlmFactory.try_chat(llm_config)
 
 
 PER_CHUNK_GRADE_PROMPT = (
@@ -163,7 +145,7 @@ def _apply_per_chunk_grades(docs: List[dict], ratings: Any) -> Tuple[List[dict],
 
 
 def retrieve_initial(state: RAGState) -> RAGState:
-    from app.chat.tools import emit_rag_step
+    from app.core.turn_runtime import emit_rag_step
 
     """
     初始化检索, 用于检索与用户问题相关的文档。
@@ -247,7 +229,7 @@ def retrieve_initial(state: RAGState) -> RAGState:
 
 
 def grade_documents_node(state: RAGState) -> RAGState:
-    from app.chat.tools import emit_rag_step
+    from app.core.turn_runtime import emit_rag_step
 
     """
     逐块评估文档相关性（一次调用覆盖全部候选块），用于判断检索结果是否与用户问题相关。
@@ -320,7 +302,7 @@ def grade_documents_node(state: RAGState) -> RAGState:
 
 
 def grade_expanded_node(state: RAGState) -> RAGState:
-    from app.chat.tools import emit_rag_step
+    from app.core.turn_runtime import emit_rag_step
 
     """
     扩展检索后的二次质量门控：对改写后的检索结果再逐块打分。
@@ -372,7 +354,7 @@ def grade_expanded_node(state: RAGState) -> RAGState:
 
 
 def rewrite_question_node(state: RAGState) -> RAGState:
-    from app.chat.tools import emit_rag_step
+    from app.core.turn_runtime import emit_rag_step
 
     """
     重写查询, 用于重写用户问题，选择最合适的查询扩展策略（step_back、hyde、complex）。
@@ -442,7 +424,7 @@ def rewrite_question_node(state: RAGState) -> RAGState:
 
 
 def retrieve_expanded(state: RAGState) -> RAGState:
-    from app.chat.tools import emit_rag_step
+    from app.core.turn_runtime import emit_rag_step
 
     """
     扩展查询, 用于扩展用户问题，选择最合适的查询扩展策略（step_back、hyde、complex）。

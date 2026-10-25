@@ -111,6 +111,80 @@ class Settings(BaseSettings):
     CHAT_JOB_TTL_SECONDS: int = 86400
     # Job 到达终态（完成/取消/失败）后的 TTL（秒）：只需覆盖断线重连与迟到追更，远小于 running 期
     CHAT_JOB_DONE_TTL_SECONDS: int = 3600
+    # Job 心跳刷新间隔（秒）。进程被杀后心跳停止，running 状态据此失效（见 chat_job._is_job_alive）。
+    # 调小=重启后恢复更快，但 Redis 写更频繁；须明显小于 TTL。
+    CHAT_JOB_HEARTBEAT_INTERVAL_SECONDS: float = 5.0
+    # 心跳键 TTL（秒）。建议 >= 3×间隔，避免 Redis 抖动导致误判为孤儿。
+    CHAT_JOB_HEARTBEAT_TTL_SECONDS: int = 15
+    # 是否单实例部署。true 时用进程级 boot_id 即时识别"上个进程留下的 running"（重启后立刻可提问）；
+    # 多 worker / 多副本必须置 false，否则会误杀其他实例正在执行的任务。
+    CHAT_JOB_SINGLE_INSTANCE: bool = True
+    # 仅用于日志分级：判定孤儿时若任务创建至今不足该秒数，降级为 warning，避免刷噪音
+    CHAT_JOB_ORPHAN_GRACE_SECONDS: int = 5
+    # 对话轮次快照：Redis 事件流丢失后的恢复依据（写 mg_chat_turn_events）。
+    # 关闭后完全不落库，行为回到「Redis 是唯一载体」。
+    CHAT_TURN_EVENTS_ENABLED: bool = True
+    # 累积多少字符触发一次快照（与下面的时间间隔先到者生效）
+    CHAT_TURN_SNAPSHOT_CHARS: int = 2000
+    # 距上次快照超过该秒数也触发一次，避免长停顿期间没有可恢复点
+    CHAT_TURN_SNAPSHOT_INTERVAL_SECONDS: float = 0.5
+    # 终态快照的保留天数；0=不清理（只做监控）。
+    # 只需覆盖 job meta 的存活期（最长 24h），超过这个时长的快照在结构上读不到，
+    # 故默认 2 天（1 天余量）而非更久——留更久只是积压死数据。
+    CHAT_TURN_EVENTS_RETENTION_DAYS: int = 2
+    # 清理循环的执行间隔（秒），默认 6 小时
+    CHAT_TURN_CLEANUP_INTERVAL_SECONDS: int = 21600
+    # 清理任务首次执行前的延迟（秒）：避开启动期的对象存储 / Milvus 预热
+    CHAT_TURN_CLEANUP_FIRST_DELAY_SECONDS: int = 300
+    # 行数超过该值后，清理日志由 info 升级为 warning（表异常增长时可被日志告警捕获）
+    CHAT_TURN_EVENTS_WARN_ROWS: int = 100000
+    # ---- 工具装配（U6）----
+    # 关闭后回退到「9 段硬编码 append」的旧装配路径。
+    # 保留一个版本用于回退：tool provider 改动的是每轮都走的装配入口，
+    # 出问题时改这里重启即可，不必回滚代码。下一个版本删除旧路径。
+    CHAT_TOOL_REGISTRY_ENABLED: bool = True
+    # ---- 规划：todo 列表（U9a）----
+    # 总开关：关闭后不挂 TodoListMiddleware，模型没有 write_todos 工具、
+    # 提示词里也不会追加规划段，行为完全回到 U8 状态（回退用）。
+    # 打开后 todos 进 agent state（随 checkpoint 落库），前端实时显示清单与状态。
+    CHAT_TODO_ENABLED: bool = True
+    # 单轮最大推理步数（模型调用 + 工具往返都算一步）。
+    # 原为硬编码 30：2026-10-24 实测「写一篇文档 + 配套练习文件」这类任务必然打穿
+    # ——检索、读目录、多次写文件每样都要一轮，30 步不够，用户看到的是
+    # 「已达到单轮最大推理步数」且内容空白。规划（write_todos）本身也占步数，
+    # 所以同步放宽。上限仍保留：它是失控循环的唯一硬刹车，不要设成上千。
+    CHAT_RECURSION_LIMIT: int = 60
+    # ---- 工作区（智能体读写文件 / 执行命令的受控环境）----
+    # 总开关：关闭后三个工作区工具完全不注册，行为回到改造前
+    CHAT_WORKSPACE_ENABLED: bool = True
+    # 后端：docker=一次性容器隔离（默认）；local=宿主受限目录（无 Docker 时兜底，无隔离）
+    CHAT_WORKSPACE_BACKEND: str = "docker"
+    # 工作区根目录：按 {uid}/{aid}/{sid} 分三级隔离；已加入 .gitignore
+    CHAT_WORKSPACE_DIR: str = "data/workspaces"
+    # 沙箱镜像：需自带 coreutils 的 timeout 命令（debian 系 slim 满足）
+    CHAT_WORKSPACE_IMAGE: str = "python:3.11-slim"
+    # 单容器资源上限：防 fork bomb 与死循环拖垮宿主
+    CHAT_WORKSPACE_MEM_LIMIT: str = "512m"
+    CHAT_WORKSPACE_CPU_LIMIT: float = 1.0
+    # 命令默认超时（秒）：宿主与容器内各有一层，容器内层先动手
+    CHAT_WORKSPACE_EXEC_TIMEOUT_SECONDS: float = 30.0
+    # 容器是否允许出网：默认关闭（当前工具只需读写文件）；pip install 等留给后续单元
+    CHAT_WORKSPACE_NETWORK: bool = False
+    # 单次读取上限（字节）：防止一次 cat 大文件把上下文打满
+    CHAT_WORKSPACE_MAX_READ_BYTES: int = 200000
+    # ---- 审批中断（高危工具执行前暂停，等人确认后从断点继续）----
+    # 总开关：关闭后不启用 checkpointer，高危工具直接按老路径处理
+    CHAT_APPROVAL_ENABLED: bool = True
+    # checkpoint 存储：postgres=持久化（推荐）；memory=进程内（重启即丢，仅开发）；
+    # none=关闭。postgres 初始化失败时自动降级 memory 并记警告。
+    CHAT_CHECKPOINT_BACKEND: str = "postgres"
+    # checkpoint 连接池上限：每轮对话只读写几次，不需要大池
+    CHAT_CHECKPOINT_POOL_SIZE: int = 2
+    # 需要人工审批的工具名（逗号分隔）。留空=没有工具需要审批。
+    CHAT_APPROVAL_TOOLS: str = "workspace_run_command"
+    # checkpoint 线程保留天数；0=不清理。审批恢复必须在同一次用户会话内完成，
+    # 用户通常几分钟内就点确认，故 1 天足够（比快照表的 2 天更短）。
+    CHAT_CHECKPOINT_RETENTION_DAYS: int = 1
     # 流式生成中取消标记的实查最小间隔（秒）：chunk 级检查仅在到点时才真正读 Redis
     CHAT_CANCEL_CHECK_INTERVAL: float = 0.25
     # 对话生成接口（/chat、/chat/stream、/chat/jobs）按用户限流：每分钟最多次数，0=关闭

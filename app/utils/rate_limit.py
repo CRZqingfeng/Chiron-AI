@@ -27,4 +27,4 @@ def check_user_rate_limit(user_id: int, *, action: str, limit: int, window_secon
     except HTTPException:
         raise
     except Exception as exc:
-        logger.warning("user rate limit skipped (redis unavailable): %s", exc)
+        logger.warning("user rate limit skipped (redis unavailable): {}", exc)

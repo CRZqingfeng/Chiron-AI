@@ -12,9 +12,9 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from app.chat.cache import cache
-from app.chat.database import SessionLocal
-from app.chat.db_models import KbDocument, KbParentChunk
+from app.core.cache import cache
+from app.core.db import SessionLocal
+from app.kb.db_models import KbDocument, KbParentChunk
 from app.core import object_storage as obs
 from app.kb.image_store import get_image_store
 from app.kb.milvus_client import MilvusManager, milvus_escape

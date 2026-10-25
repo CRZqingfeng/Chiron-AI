@@ -38,7 +38,14 @@ class ChatRequest(BaseModel):
         None,
         description="用户已确认的高危 MCP 调用 pending_id；续跑时按该记录执行一次",
     )
-
+    resume_thread_id: Optional[str] = Field(
+        None,
+        description="审批恢复：中断那一轮的 job_id（checkpoint 线程标识）。与 resume_decision 成对使用",
+    )
+    resume_decision: Optional[str] = Field(
+        None,
+        description="审批决定：approve / reject。给定时从断点继续，不追加新的用户消息",
+    )
     @field_validator("message")
     @classmethod
     def _limit_message_length(cls, v: str) -> str:
@@ -48,6 +55,22 @@ class ChatRequest(BaseModel):
         if v and len(v) > mx:
             raise ValueError(f"消息长度不能超过 {mx} 字符")
         return v
+
+    @field_validator("resume_decision")
+    @classmethod
+    def _check_resume_decision(cls, v: Optional[str]) -> Optional[str]:
+        """只接受 approve / reject。
+
+        不在入口拦住的话，非法值会一路传到 LangGraph 的 HITL middleware，
+        在那抛 ValueError 后被错误分类器归为 unknown，用户只看到「生成失败」——
+        既查不出原因，也没有可操作的提示。
+        """
+        if v is None or not str(v).strip():
+            return None
+        val = str(v).strip().lower()
+        if val not in ("approve", "reject"):
+            raise ValueError("resume_decision 只能是 approve 或 reject")
+        return val
 
     @field_validator("session_id")
     @classmethod
@@ -74,7 +97,11 @@ class ChatRequest(BaseModel):
     @model_validator(mode="after")
     def _message_or_attachments(self) -> "ChatRequest":
         if self.regenerate:
-            return self  # 如果 regenerate 为 True，则返回当前对象
+            return self
+        # 审批恢复既没有新消息、也没有附件：模型输入完全来自 checkpoint，
+        # `message` 本来就该是空的。不加这一条，恢复请求会在入口被 422 拦掉。
+        if self.resume_decision:
+            return self
         if not (self.message or "").strip() and not self.attachment_ids:
             raise ValueError("message 与 attachment_ids 至少填写一项")
         return self
@@ -116,20 +143,6 @@ class BranchSelectRequest(BaseModel):
     assistant_message_id: int = Field(..., description="要切换到的助手消息 ID")
 
 
-class ChatResponse(BaseModel):
-    """
-    智能体对话响应
-    :param response: 响应消息
-    :param rag_trace: RAG 追踪信息
-    :param kb_preselect: 知识库前置选档元信息（本回合在智能体前自动圈定的 file_key 等）
-    """
-    response: str
-    rag_trace: Optional[dict[str, Any]] = None
-    sources: Optional[list[dict[str, Any]]] = None
-    kb_preselect: Optional[dict[str, Any]] = None
-    pending_mcp_confirmations: Optional[list[dict[str, Any]]] = None
-
-
 class MessageInfo(BaseModel):
     """
     消息信息
@@ -143,6 +156,7 @@ class MessageInfo(BaseModel):
     :param error_text: 助手消息生成失败时的错误说明（可选，用于历史展示）
     :param thinking_text: 工具调用前的过渡文本（可选，用于历史回放思考区）
     :param thinking_items: 思考区有序时间线（step/text 交错，可选，用于历史回放）
+    :param approval_pending: 审批中断的待确认信息（可选，有值时表示这条消息在等用户决定）
     :param version_index: 助手消息在同父兄弟版本中的序号（从 1 起）
     :param version_count: 同父兄弟版本总数
     :param sibling_ids: 同父兄弟版本的消息 ID（按版本序号排序，含自身）
@@ -158,6 +172,9 @@ class MessageInfo(BaseModel):
     sources: Optional[list[dict[str, Any]]] = None
     thinking_text: Optional[str] = None
     thinking_items: Optional[list[dict[str, Any]]] = None
+    # 为什么必须显式声明：pydantic 默认丢弃未声明字段，storage 里存了也传不出去。
+    # 少了这一项，中断后刷新页面确认卡片会消失——用户再也点不到「允许」。
+    approval_pending: Optional[dict[str, Any]] = None
     version_index: int = 1
     version_count: int = 1
     sibling_ids: Optional[list[int]] = None

@@ -74,6 +74,28 @@
                     v-html="renderAgentChatMarkdown(item.text)"
                   ></div>
                 </div>
+                <!-- U9a 规划清单：实时（SSE todo_list）与回放（thinking_items 里的终态）
+                     共用这一个分支，保证流式与刷新后长得一样 -->
+                <div v-else-if="item.type === 'todo'" class="agent-chat-todo-block">
+                  <div class="agent-chat-todo-head">
+                    <span class="agent-chat-thinking-step-icon">🗒️</span>
+                    <span class="agent-chat-thinking-step-label">{{
+                      $t('views.agents.chat_todo_title')
+                    }}</span>
+                    <span class="agent-chat-todo-progress">{{ todoProgress(item.todos) }}</span>
+                  </div>
+                  <ul class="agent-chat-todo-list">
+                    <li
+                      v-for="(todo, tIdx) in item.todos || []"
+                      :key="tIdx"
+                      class="agent-chat-todo-item"
+                      :class="`agent-chat-todo-item--${todoMark(todo.status).tone}`"
+                    >
+                      <span class="agent-chat-todo-mark">{{ todoMark(todo.status).icon }}</span>
+                      <span class="agent-chat-todo-text">{{ todo.content }}</span>
+                    </li>
+                  </ul>
+                </div>
               </template>
             </div>
             <p v-if="!message.thinkingItems?.length" class="agent-chat-thinking-placeholder">
@@ -155,6 +177,46 @@
                   拒绝
                 </n-button>
               </div>
+            </div>
+          </div>
+          <div
+            v-if="message.approvalPending?.actions?.length"
+            class="agent-chat-approval"
+          >
+            <div class="agent-chat-approval-title">
+              {{ $t('views.agents.chat_approval_title') }}
+            </div>
+            <div
+              v-for="(act, ai) in message.approvalPending.actions"
+              :key="`ap-${ai}`"
+              class="agent-chat-approval-item"
+            >
+              <div class="agent-chat-approval-name">{{ act.description || act.name }}</div>
+              <pre
+                v-if="formatApprovalArgs(act.args)"
+                class="agent-chat-approval-args"
+              >{{ formatApprovalArgs(act.args) }}</pre>
+            </div>
+            <div class="agent-chat-approval-actions">
+              <n-button
+                size="tiny"
+                type="primary"
+                :disabled="sending || approvingIds.has(message.id)"
+                @click="emit('approval-decide', message, 'approve')"
+              >
+                {{ $t('views.agents.chat_approval_allow') }}
+              </n-button>
+              <n-button
+                size="tiny"
+                quaternary
+                :disabled="sending || approvingIds.has(message.id)"
+                @click="emit('approval-decide', message, 'reject')"
+              >
+                {{ $t('views.agents.chat_approval_reject') }}
+              </n-button>
+            </div>
+            <div class="agent-chat-approval-hint">
+              {{ $t('views.agents.chat_approval_hint') }}
             </div>
           </div>
           <div
@@ -311,7 +373,7 @@ import {
   safeExternalHref,
   toSameOriginMediaUrl,
 } from '@/utils/agentChatMarkdown'
-import { thinkingPillLabel } from '@/utils/agentChatThinking'
+import { thinkingPillLabel, todoMark, todoProgress } from '@/utils/agentChatThinking'
 
 const props = defineProps({
   message: { type: Object, required: true },
@@ -322,17 +384,37 @@ const props = defineProps({
   sending: { type: Boolean, default: false },
   switchingBranch: { type: Boolean, default: false },
   confirmingMcpIds: { type: Object, default: () => new Set() },
+  approvingIds: { type: Object, default: () => new Set() },
 })
 
 const emit = defineEmits([
   'toggle-thinking',
   'mcp-approve',
+  'approval-decide',
   'md-click',
   'switch-version',
   'regenerate',
   'copy-plain',
   'copy-md',
 ])
+
+/**
+ * 审批卡片里的参数预览。
+ *
+ * 后端 `actions[].args` 是原样的对象/数组，直接拼进模板会显示成 [object Object]。
+ * 截断到 800 字符与 MCP 卡片的 `args_preview[:800]` 保持一致，避免大段文件内容撑爆界面。
+ */
+function formatApprovalArgs(args) {
+  if (args == null) return ''
+  let text
+  try {
+    text = typeof args === 'string' ? args : JSON.stringify(args, null, 2)
+  } catch {
+    text = String(args)
+  }
+  if (!text) return ''
+  return text.length > 800 ? `${text.slice(0, 800)}…` : text
+}
 
 // 流式行渲染降频：renderVersion 由 useChatJobStream 按 ~100ms 窗口 bump，
 // displayContent 是 bump 时刻的内容快照；历史行没有这两个字段，直接依赖 content
@@ -410,6 +492,54 @@ const renderedContent = computed(() => {
 .agent-chat-mcp-confirm-actions {
   display: flex;
   gap: 8px;
+}
+
+/* 审批卡片：与 MCP 确认卡片同色系（琥珀警示），避免用户误以为是两种不同的东西 */
+.agent-chat-approval {
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-chat-approval-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--n-warning-color);
+}
+
+.agent-chat-approval-item {
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.08);
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+}
+
+.agent-chat-approval-name {
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.agent-chat-approval-args {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  color: var(--n-text-color-3);
+}
+
+.agent-chat-approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.agent-chat-approval-hint {
+  font-size: 12px;
+  color: var(--n-text-color-3);
 }
 
 .agent-chat-sources {

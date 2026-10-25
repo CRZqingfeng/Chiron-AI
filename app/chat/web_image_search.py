@@ -21,7 +21,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, field_validator
 
-from app.chat.tools import (
+from app.core.turn_runtime import (
     _set_last_rag_context,
     emit_rag_step,
     fetch_url_disabled_this_turn_msg,
