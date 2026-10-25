@@ -1398,8 +1398,16 @@ async def _finish_completed(
         # 否则历史里会留下一条空壳 + 一条正式回答，用户看到的是一次提问两条回复
         saved = False
         if regen_target_ai_id is not None:
+            # merge_thinking=True：中断那轮落的思考区在另一条路径上，
+            # 本轮 collector 只有中断之后的片段。覆盖会让思考区整段消失。
             saved = storage.update_assistant_in_place(
-                user_id, agent_id, session_id, regen_target_ai_id, ai_msg, extra=ai_extra
+                user_id,
+                agent_id,
+                session_id,
+                regen_target_ai_id,
+                ai_msg,
+                extra=ai_extra,
+                merge_thinking=True,
             )
         if not saved:
             yield {"type": "error", "content": "恢复失败：目标消息已被移除，请刷新后重试"}
@@ -1410,8 +1418,15 @@ async def _finish_completed(
         saved = False
         if regen_target_ai_id is not None:
             if mcp_approved_pending_id:
+                # 同 resume：MCP 确认续跑也跨越两次 collector
                 saved = storage.update_assistant_in_place(
-                    user_id, agent_id, session_id, regen_target_ai_id, ai_msg, extra=ai_extra
+                    user_id,
+                    agent_id,
+                    session_id,
+                    regen_target_ai_id,
+                    ai_msg,
+                    extra=ai_extra,
+                    merge_thinking=True,
                 )
             else:
                 saved = storage.insert_assistant_version(

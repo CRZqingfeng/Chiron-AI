@@ -80,7 +80,8 @@ class _FakeStorage:
         return True
 
     def update_assistant_in_place(self, *args, **kwargs) -> bool:
-        self.written.append({"op": "update_in_place"})
+        # 记录 kwargs，用于断言 resume 路径必须带 merge_thinking=True
+        self.written.append({"op": "update_in_place", **kwargs})
         return True
 
     def insert_assistant_version(self, *args, **kwargs) -> bool:
@@ -371,7 +372,7 @@ class AgentStreamBranchTests(TestCase):
 
         self.assertEqual(_types(events), ["content", "done"])
         # MCP 确认续跑 → 原地覆盖目标消息
-        self.assertIn({"op": "update_in_place"}, storage.written)
+        self.assertIn("update_in_place", [w.get("op") for w in storage.written])
 
     def test_regenerate_text_mismatch_is_rejected(self) -> None:
         storage = _FakeStorage(regen_context=([HumanMessage(content="hi")], "原来的问题", [11]))
@@ -483,11 +484,47 @@ class AgentStreamBranchTests(TestCase):
 
         self.assertIn("approval_required", _types(events))
         self.assertTrue(events[-1]["interrupted"])
-        self.assertIn({"op": "update_in_place"}, storage.written)
+        self.assertIn("update_in_place", [w.get("op") for w in storage.written])
         self.assertEqual(
             [r for r in storage.written if r.get("type") == "ai"],
             [],
             "resume 后又中断必须原地覆盖，不能新增助手消息行",
+        )
+
+    def test_resume_merges_thinking_instead_of_overwriting(self) -> None:
+        """resume 正常完成时必须带 merge_thinking=True。
+
+        中断跨越两次独立的 collector：中断那轮把前半段思考区落进待确认消息，
+        resume 这轮只有中断之后的片段。覆盖式更新会让用户点开思考区只看到
+        「暂无检索步骤」——2026-10-25 线上实测就是这个表现。
+        """
+        storage = _FakeStorage(
+            [
+                {
+                    "message_id": 11,
+                    "type": "ai",
+                    "content": "",
+                    "approval_pending": {"interrupt_id": "old", "thread_id": "t1"},
+                }
+            ]
+        )
+        agent = _FakeAgent([_chunk("全部写好了")])
+        with _harness(storage, agent, checkpointer=object()):
+            events = _run(
+                _collect(resume_decision="approve", resume_thread_id="t1", target_message_id=11)
+            )
+
+        self.assertEqual(_types(events)[-1], "done")
+        updates = [w for w in storage.written if w.get("op") == "update_in_place"]
+        self.assertTrue(updates, "resume 完成应原地更新中断那条消息")
+        self.assertTrue(
+            all(u.get("merge_thinking") is True for u in updates),
+            "resume 必须合并思考区，否则中断前的步骤被清空",
+        )
+        self.assertEqual(
+            [r for r in storage.written if r.get("type") == "ai"],
+            [],
+            "resume 完成不能新增助手消息行",
         )
 
     def test_interrupt_persists_plan_for_replay(self) -> None:
