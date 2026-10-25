@@ -114,6 +114,16 @@ export default {
     request.delete(`/user-agent/chat/sessions/${encodeURIComponent(session_id)}`, {
       params: { agent_id },
     }),
+  /**
+   * 跨会话记忆（U7）。作用域是「用户 × 智能体」，所以两个接口都要 agent_id。
+   * 只返回 status=active 的条目：superseded 是历史版本，给用户看没有意义。
+   */
+  getAgentMemories: (agentId, params = {}) =>
+    request.get('/user-agent/memories', { params: { agent_id: agentId, ...params } }),
+  deleteAgentMemory: (agentId, memId) =>
+    request.delete(`/user-agent/memories/${encodeURIComponent(memId)}`, {
+      params: { agent_id: agentId },
+    }),
   getRecentAgents: () => request.get('/user-agent/recent_agents'),
   touchRecentAgent: (params = {}) =>
     request.post('/user-agent/recent_agents/touch', null, { params }),
