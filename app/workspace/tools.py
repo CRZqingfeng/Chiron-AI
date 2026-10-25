@@ -111,7 +111,9 @@ def make_workspace_tools(ws: BaseWorkspace, *, include_exec: bool = False) -> li
             何时使用：需要运行脚本、批量处理文件、转换格式、或验证代码能否跑通时。
             何时不要使用：只是读写单个文件请用 workspace_read_file / workspace_write_file；
             需要访问外网请用 fetch_url（沙箱默认无网络）。
-            该工具属于高危操作，执行前会请用户确认一次。
+            **会请用户确认**：涉及写文件、删改、执行代码的命令。可证明只读的命令
+            （ls / cat / head / tail / wc / grep / git status|diff|log 等）免确认直接执行，
+            因此不需要为了「看一眼目录」绕路。
             command：完整的 shell 命令，如 "python script.py" 或 "ls -la"。
             cwd：相对工作区根目录的工作目录，默认根目录。
             timeout：超时秒数，默认 30，最大 120。
@@ -120,6 +122,18 @@ def make_workspace_tools(ws: BaseWorkspace, *, include_exec: bool = False) -> li
                 budget = max(1, min(int(timeout), 120))
             except (TypeError, ValueError):
                 budget = 30
+            # 免确认时告知用户「为什么没弹卡片」：否则他会以为审批坏了。
+            # 判定与中间件共用同一个函数，不会出现「工具说免确认、界面还在等确认」。
+            try:
+                from app.core.turn_runtime import emit_rag_step
+                from app.workspace.command_policy import is_safe_readonly_command
+
+                _safe, _why = is_safe_readonly_command(command or "")
+                if _safe:
+                    emit_rag_step("🔓", "只读命令免确认", f"{(command or '').strip()[:100]}｜{_why}")
+            except Exception:  # noqa: BLE001 - 提示失败不影响执行
+                pass
+
             try:
                 r = ws.execute(command or "", cwd=cwd or None, timeout=budget)
             except WorkspaceError as e:
