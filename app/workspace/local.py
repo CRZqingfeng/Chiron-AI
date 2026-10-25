@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import locale
+import os
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -22,6 +24,45 @@ from app.workspace.base import (
     safe_resolve,
     truncate_text,
 )
+
+# 超时后等管道关闭的二次上限（秒）。正常情况下 taskkill /T 已经把整棵树杀干净，
+# 管道立刻 EOF，这个 timeout 根本用不到；只在「进程树杀不干净」时才生效，
+# 用来保证命令一定能在有限时间内返回，而不是被孙进程拖住。
+_KILL_GRACE_SECONDS = 2.0
+
+
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """杀掉整棵进程树，而不只是 shell。
+
+    为什么必须杀树：`shell=True` 启动的是 `cmd.exe /c <command>`（POSIX 下是
+    `/bin/sh -c`）。`proc.kill()` 只杀掉 shell 本身，它派生出的孙进程继续持有
+    stdout/stderr 管道；而 `communicate()` 会一直读到管道 EOF，于是
+    「设了 0.5s 超时、实际等了 5.8s」——超时形同虚设（2026-10-24 实测）。
+
+    Windows 用 `taskkill /F /T`（/T 连子孙），POSIX 用独立进程组 + `killpg`。
+    两条路径都失败时退回 `proc.kill()`，至少保证 shell 死掉。
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+            return
+        except Exception:  # noqa: BLE001 - 杀不掉就退回单进程 kill，不能让清理本身抛错
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        except Exception:  # noqa: BLE001 - 同上
+            pass
+    try:
+        proc.kill()
+    except Exception:  # noqa: BLE001 - 进程可能已退出
+        pass
 
 
 def _decode(raw: bytes) -> str:
@@ -85,29 +126,50 @@ class LocalWorkspace(BaseWorkspace):
         limit = float(timeout if timeout is not None else self._exec_timeout)
         started = time.perf_counter()
         try:
-            proc = subprocess.run(  # noqa: S602 - 本来就是执行 shell，由 cwd 锁定在工作区内
+            # 不用 subprocess.run(timeout=)：它在超时后只 kill shell，
+            # 孙进程继续持有管道，communicate 会等到孙进程自然结束（实测等满 5.8s）。
+            # 这里自己管理生命周期，超时先杀整棵树再收尾。
+            proc = subprocess.Popen(  # noqa: S602 - 本来就是执行 shell，由 cwd 锁定在工作区内
                 command,
                 shell=True,
                 cwd=str(work_dir),
-                capture_output=True,
-                timeout=limit,
-            )
-        except subprocess.TimeoutExpired as e:
-            # 超时是正常结果而非异常：把已产出的部分还回去，模型才知道跑到哪一步了
-            out, truncated_out = truncate_text(_decode(e.stdout or b""), self._output_limit)
-            err, truncated_err = truncate_text(_decode(e.stderr or b""), self._output_limit)
-            return CommandResult(
-                stdout=out,
-                stderr=(err + f"\n命令执行超时（{limit:.0f}s），已终止").strip(),
-                exit_code=-1,
-                duration_ms=int((time.perf_counter() - started) * 1000),
-                truncated=truncated_out or truncated_err,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=(os.name != "nt"),  # POSIX 需要独立进程组才能 killpg
             )
         except FileNotFoundError as e:
             raise WorkspaceError(f"无法执行命令：{e}") from e
 
-        out, truncated_out = truncate_text(_decode(proc.stdout), self._output_limit)
-        err, truncated_err = truncate_text(_decode(proc.stderr), self._output_limit)
+        try:
+            raw_out, raw_err = proc.communicate(timeout=limit)
+        except subprocess.TimeoutExpired as e:
+            # 超时是正常结果而非异常：把已产出的部分还回去，模型才知道跑到哪一步了
+            _kill_process_tree(proc)
+            try:
+                raw_out, raw_err = proc.communicate(timeout=_KILL_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                # 极端情况：树没杀干净（如权限不足）。放弃继续读，关管道避免 fd 泄漏，
+                # 用第一次超时时捕获到的部分输出。
+                for pipe in (proc.stdout, proc.stderr):
+                    try:
+                        if pipe is not None:
+                            pipe.close()
+                    except Exception:  # noqa: BLE001 - 关管道失败不影响结果
+                        pass
+                raw_out = getattr(e, "output", None) or b""
+                raw_err = getattr(e, "stderr", None) or b""
+            out, truncated_out = truncate_text(_decode(raw_out or b""), self._output_limit)
+            err, truncated_err = truncate_text(_decode(raw_err or b""), self._output_limit)
+            return CommandResult(
+                stdout=out,
+                stderr=(err + f"\n命令执行超时（{limit:g}s），已终止").strip(),
+                exit_code=-1,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                truncated=truncated_out or truncated_err,
+            )
+
+        out, truncated_out = truncate_text(_decode(raw_out), self._output_limit)
+        err, truncated_err = truncate_text(_decode(raw_err), self._output_limit)
         return CommandResult(
             stdout=out,
             stderr=err,

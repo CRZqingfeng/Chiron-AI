@@ -26,10 +26,8 @@ from app.chat.llm_errors import classify_llm_error
 from app.chat.memory_archive import schedule_archive_session_memory
 from app.chat.memory_tool import make_search_session_memory_tool
 from app.core.memory_turns import apply_sliding_window_turns
-from app.core.message_codec import (
-    expand_messages_for_model,
-    msg_content_to_str,
-)
+from app.core.message_codec import msg_content_to_str
+from app.chat.vision_expand import expand_messages_for_model
 from app.chat.storage import storage
 from app.core.turn_runtime import (
     get_last_rag_context,

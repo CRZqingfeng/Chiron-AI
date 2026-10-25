@@ -6,8 +6,13 @@ PostgreSQL（业务库）SQLAlchemy 引擎与会话工厂。
 所以它不该住在 `app.chat` 下面（那会让 `app.kb` 必须 import `app.chat`）。
 
 建表约定：`create_all` 只创建「已 import 并注册到 Base.metadata」的表。
-因此 `init_db()` 里显式 import 两个模型模块——漏了就会静默少建表。
-KB 专属的 ALTER 语句放在 `app/kb/db_migrations.py`，由本函数回调。
+因此**调用方必须先 import 各域的 db_models**（`app.core.db_models` 对话五表、
+`app.kb.db_models` 知识库三表），漏了就会静默少建表。
+
+职责边界（2026-10-25 拆分）：本模块只负责「引擎 + 会话工厂 + 对话域建表/补列」。
+知识库的 DDL 在 `app/kb/db_migrations.py`，记忆 Milvus 集合在
+`app/chat/milvus_memory.py` —— 这两件由 `app/main.py`（组合根）调用，
+所以 core 里没有任何 `from app.kb` / `from app.chat` 的引用。
 """
 
 from __future__ import annotations
@@ -50,27 +55,31 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 Base = declarative_base()  
 
 
-def init_db() -> None:
+def register_models() -> None:
+    """把对话五表挂到 `Base.metadata` 上。
+
+    为什么单独成一个函数：`create_all` 只建「已 import 并注册」的表，而**知识库三表
+    属于 `app.kb`**——让 core 去 import kb 就是反向依赖。所以这里只负责自己域的模型，
+    知识库那边由调用方（`app/main.py` 这个组合根）自己 import。
     """
-    让 ORM 模型挂到 Base.metadata 上
-    在数据库里创建缺失的表（对话五表 + 知识库三表）
+    import app.core.db_models  # noqa: F401
+
+
+def init_db() -> None:
+    """创建对话域的表并补齐后续新增的列。
+
+    只处理 `app.core.db_models` 的五张表（对话/会话/附件/快照/消息）。
+    知识库三表的建表与迁移在 `app.kb.db_migrations`，记忆 Milvus 集合的初始化在
+    `app.chat.milvus_memory`——那两件都由 `app/main.py` 在启动时调用，
+    因为 core 不该知道 kb / chat 的存在。
     """
     # 关键：create_all 只建「已注册到 Base.metadata」的表。
-    # 这两个 import 就是注册动作，缺一个就会静默少建表。
-    import app.core.db_models  # noqa: F401
-    import app.kb.db_models  # noqa: F401
+    # 调用方必须先 import 各域的 db_models（见 register_models 的说明）。
+    register_models()
 
     from sqlalchemy import text
 
     Base.metadata.create_all(bind=engine)
-    try:
-        from app.chat.milvus_memory import init_chat_memory_collection
-
-        init_chat_memory_collection()
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).warning("init_chat_memory_collection skipped", exc_info=True)
     # create_all 不会为已有表添加新列，需显式迁移
     with engine.begin() as conn:
         conn.execute(
@@ -142,11 +151,6 @@ def init_db() -> None:
                 "ALTER TABLE mg_chat_sessions ADD COLUMN IF NOT EXISTS path_message_count INTEGER"
             )
         )
-
-    # 知识库表的迁移放回知识库自己的包里，core 不写业务 DDL
-    from app.kb.db_migrations import migrate_kb_schema
-
-    migrate_kb_schema(engine)
 
 
 def get_db_session() -> Session:

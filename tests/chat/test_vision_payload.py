@@ -21,7 +21,7 @@ from app.chat.agent_service import (
     _prepare_to_invoke_messages,
     _should_run_vision_caption,
 )
-from app.core.message_codec import _prepare_vision_image_bytes, strip_image_urls_after_tools
+from app.core.message_codec import prepare_vision_image_bytes, strip_image_urls_after_tools
 from app.chat.vision_caption import _CAPTION_SYSTEM_PROMPT
 
 
@@ -35,7 +35,7 @@ def _png_bytes(width: int, height: int, color=(20, 80, 180)) -> bytes:
 class VisionCompressTests(unittest.TestCase):
     def test_large_png_becomes_smaller_jpeg(self):
         raw = _png_bytes(3000, 2000)
-        out, mime = _prepare_vision_image_bytes(raw, mime="image/png")
+        out, mime = prepare_vision_image_bytes(raw, mime="image/png")
         self.assertEqual(mime, "image/jpeg")
         self.assertLess(len(out), len(raw))
         compressed = Image.open(BytesIO(out))
@@ -44,7 +44,7 @@ class VisionCompressTests(unittest.TestCase):
 
     def test_bad_bytes_fallback_to_original(self):
         raw = b"not-an-image"
-        out, mime = _prepare_vision_image_bytes(raw, mime="image/png")
+        out, mime = prepare_vision_image_bytes(raw, mime="image/png")
         self.assertEqual(out, raw)
         self.assertEqual(mime, "image/png")
 

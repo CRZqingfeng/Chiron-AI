@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from tortoise import Tortoise
 
 from app.core.exceptions import SettingNotFound
-from app.core.init_app import (
+from app.init_app import (
     init_data,
     make_middlewares,
     register_exceptions,
@@ -42,13 +42,27 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("对象存储初始化失败（头像/附件/知识库文件功能将不可用）: {}", e)
     try:
-        from app.core.db import init_db
+        # 组合根负责注册所有域的模型：core 不该 import kb（那会反向依赖）。
+        # 少 import 任何一个，create_all 就会静默少建表。
+        import app.core.db_models  # noqa: F401
+        import app.kb.db_models  # noqa: F401
+        from app.core.db import engine, init_db
+        from app.kb.db_migrations import migrate_kb_schema
 
         init_db()
+        migrate_kb_schema(engine)
         chat_db_ready = True
     except Exception as e:
         chat_db_ready = False
         logger.error("PostgreSQL 聊天库初始化失败（智能体对话将不可用）: {}", e)
+    if chat_db_ready:
+        try:
+            # 记忆检索用的 Milvus 集合（chat 域，不属于 db 的职责）
+            from app.chat.milvus_memory import init_chat_memory_collection
+
+            await asyncio.to_thread(init_chat_memory_collection)
+        except Exception as e:
+            logger.warning("记忆集合初始化失败（首次归档时自动重试）: {}", e)
     # 对话快照表的周期清理：只在建表成功后才起。
     # 表不存在时启动清理只会每轮刷一条警告，没有意义。
     cleanup_task: asyncio.Task | None = None

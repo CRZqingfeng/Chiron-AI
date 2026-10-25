@@ -169,15 +169,14 @@ class LocalWorkspaceExecTests(unittest.TestCase):
         self.assertIn("超时", r["stderr"])
         self.assertTrue(r["truncated"] is False)
 
-    @unittest.skip(
-        "已知缺陷（P2，见 docs/dev/体检报告-2026-10-24.md §11）："
-        "Windows 下 execute 的 timeout 只杀掉 cmd.exe，孙进程继续跑；"
-        "capture_output 会一直等到管道关闭，实测 5.8s 才返回（期望 <1s）。"
-        "修法是杀进程树（taskkill /T），属执行语义变更，需单独决策。"
-        "修好后删掉本装饰器即可——断言本身是对的。"
-    )
     def test_timeout_returns_promptly(self):
-        """超时必须**及时**返回：它是失控命令的刹车，慢刹车等于没刹车。"""
+        """超时必须**及时**返回：它是失控命令的刹车，慢刹车等于没刹车。
+
+        曾经的缺陷：`subprocess.run(timeout=)` 只 kill shell，孙进程继续持有管道，
+        `communicate` 要等它自然退出 —— 设 0.5s 超时实际等满 5.8s。
+        现在 `_kill_process_tree` 杀整棵树（Windows `taskkill /F /T`、POSIX `killpg`）。
+        这条断言就是那次的回归守卫：改回 `subprocess.run` 会立刻红。
+        """
         cmd = f'"{sys.executable}" -c "import time; time.sleep(5)"'
         r = self.ws.execute(cmd, timeout=0.5)
         self.assertLess(r["duration_ms"], 4000)

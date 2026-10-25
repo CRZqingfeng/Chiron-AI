@@ -11,8 +11,20 @@ from app.utils.auth_cache import cache_user, get_snapshot, user_from_snapshot
 
 class AuthControl:
     @classmethod
-    async def is_authed(cls, token: str = Header(..., description="token验证")) -> Optional["User"]:
+    async def is_authed(
+        cls, token: str | None = Header(None, description="token验证")
+    ) -> Optional["User"]:
+        """
+        鉴权依赖。
+
+        `token` 声明为 `Header(None)` 而不是 `Header(...)`：
+        必填时 FastAPI 在**进入函数前**就返回 422「请求参数无效」，
+        而"没带凭证"语义上就是 401。两者对客户端的行为完全不同——
+        401 会触发刷新 token 流程，422 只会让前端把错误当成参数问题吞掉。
+        """
         try:
+            if not token:
+                raise HTTPException(status_code=401, detail="缺少登录凭证")
             # 仅本地开发（DEBUG=true）允许免 JWT；生产环境勿开启 DEBUG
             if token == "dev":
                 if not settings.DEBUG:

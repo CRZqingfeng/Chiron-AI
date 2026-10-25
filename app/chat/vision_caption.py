@@ -11,7 +11,8 @@ from typing import Any, AsyncIterator
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from app.core.message_codec import expand_human_image_refs, msg_content_to_str
+from app.chat.vision_expand import expand_human_image_refs
+from app.core.message_codec import msg_content_to_str
 from app.models.user_agent import UserAgent
 from app.settings import settings
 from app.utils.llm_factory import LlmFactory
