@@ -196,7 +196,10 @@ def _prepare_to_invoke_messages(
     image_caption 非空时（两阶段读图）：不再展开图片，描述随本轮上下文注入，agent 全程纯文本。
     """
     from app.chat.compact import build_compacted_model_messages
-    from app.chat.memory_search import proactive_session_memory_inject_text
+    from app.chat.memory_search import (
+        inject_sources,
+        proactive_session_memory_inject_text,
+    )
     from app.core.memory_turns import turn_keys_of
     from app.core.turn_runtime import emit_rag_step
 
@@ -238,7 +241,16 @@ def _prepare_to_invoke_messages(
         )
     #步骤 3：展开多模态图片
     if inj:
-        emit_rag_step("📌", "会话记忆预注入", "已附加较早轮次摘录")
+        # 标签由实际注入内容决定，不写死：U7 起 inj 可能是「长期记忆」单独一段
+        # （全新会话没有任何被归档的轮次）。写死一句「会话记忆 + 较早轮次摘录」的固定文案，
+        # 在这种场景就显示了一件不存在的事，用户会以为系统在编。
+        # （tests/chat/test_memory_inject.py 有守卫：源码里出现那句固定文案即失败）
+        srcs = inject_sources(inj)
+        emit_rag_step(
+            "📌",
+            "记忆预注入",
+            "已附加：" + "、".join(srcs) if srcs else "已附加相关记忆",
+        )
     has_caption = bool((image_caption or "").strip())
     #图片变 data URL
     #把 messages 里的图片引用（image_ref）转成模型能看的格式
