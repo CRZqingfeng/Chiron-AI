@@ -34,20 +34,6 @@ class SchemaPatch:
     statements_fn: Callable[[], list[str]] | None = None  # 运行时构造语句（数据修正类）
 
 
-def _mcp_preset_confirm_policy_statements() -> list[str]:
-    """已知只读 MCP 预置的存量 auto 配置收紧为 never（避免 Context7 等查询服务被误拦）。"""
-    from app.mcp_client.presets import MCP_SERVER_PRESETS
-
-    readonly_urls = [p["url"] for p in MCP_SERVER_PRESETS if p.get("confirm_policy") == "never"]
-    if not readonly_urls:
-        return []
-    quoted = ", ".join("'" + u.replace("'", "''") + "'" for u in readonly_urls)
-    return [
-        "UPDATE user_agent_mcp_server SET confirm_policy = 'never'"
-        f" WHERE confirm_policy = 'auto' AND url IN ({quoted})"
-    ]
-
-
 PATCHES: tuple[SchemaPatch, ...] = (
     SchemaPatch(
         name="001_user_token_version",
@@ -114,12 +100,34 @@ PATCHES: tuple[SchemaPatch, ...] = (
         ),
         before_schemas=True,
     ),
-    SchemaPatch(
-        name="100_mcp_preset_confirm_policy",
-        description="只读 MCP 预置的存量 auto 配置收紧为 never（数据修正）",
-        statements_fn=_mcp_preset_confirm_policy_statements,
-    ),
 )
+
+_EXTRA_PATCHES: list[SchemaPatch] = []
+
+
+def register_patches(*patches: SchemaPatch) -> None:
+    """业务域登记自己的补丁（追加在 core 通用补丁之后）。
+
+    为什么需要这个入口：补丁表里混着两类东西——「通用列变更」（core 能自己写完）
+    与「业务数据修正」（要知道该业务域的常量，例如 MCP 预置的只读 url 列表）。
+    让 core 直接 import 业务包就是反向依赖，于是改成：业务包在 import 时自己登记，
+    组合根（`app/init_app.py`）负责 import 那些模块。
+
+    编号约定不变：新补丁只能追加，不得改动既有条目的编号/语句/顺序，
+    否则 `schema_patch_log` 里的历史语义会漂移。
+    """
+    known = {p.name for p in PATCHES} | {p.name for p in _EXTRA_PATCHES}
+    for patch in patches:
+        if patch.name in known:
+            raise ValueError(f"schema 补丁编号重复：{patch.name}")
+        _EXTRA_PATCHES.append(patch)
+        known.add(patch.name)
+
+
+def all_patches() -> tuple[SchemaPatch, ...]:
+    """core 通用补丁 + 各业务域登记的补丁。"""
+    return PATCHES + tuple(_EXTRA_PATCHES)
+
 
 _LOG_TABLE_SQL = '''CREATE TABLE IF NOT EXISTS "schema_patch_log" (
     "name" VARCHAR(100) PRIMARY KEY,

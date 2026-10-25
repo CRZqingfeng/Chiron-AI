@@ -36,7 +36,7 @@ from app.chat.preview_session import is_editor_preview_session
 from app.chat.storage import storage
 from app.chat.turn_events import purge_for_session
 from app.controllers.user_agent import user_agent_controller
-from app.controllers.user_agent_recent import list_recent_agents_public, touch_recent_agent
+from app.services.user_agent_recent import list_recent_agents_public, touch_recent_agent
 from app.models.user_agent import UserAgent
 from app.core.dependency import AuthControl
 from app.models import User

@@ -47,14 +47,15 @@ class GateTests(unittest.TestCase):
         from app.chat import chat_job
 
         return [
+            # chat_job 已下沉到 services（不再依赖 controllers），mock 目标随之改变
             mock.patch.object(
-                chat_job.user_agent_controller,
-                "get_accessible",
+                chat_job,
+                "get_accessible_agent",
                 new=mock.AsyncMock(return_value=object()),
             ),
             mock.patch.object(chat_job, "iter_chat_stream_events", stream),
             mock.patch(
-                "app.controllers.user_agent_recent.touch_recent_agent",
+                "app.services.user_agent_recent.touch_recent_agent",
                 new=mock.AsyncMock(),
             ),
         ]

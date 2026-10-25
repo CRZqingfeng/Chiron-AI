@@ -23,7 +23,7 @@ from app.chat.turn_events import (
     save_snapshot,
     save_terminal,
 )
-from app.controllers.user_agent import user_agent_controller
+from app.services.user_agent_access import get_accessible_agent
 from app.log import logger
 from app.settings import settings
 
@@ -400,7 +400,7 @@ async def _run_chat_job(
     """
     校验 → 排队 → 调用主流程 → 逐条事件写 Redis → 收尾改状态
     """
-    from app.controllers.user_agent_recent import touch_recent_agent
+    from app.services.user_agent_recent import touch_recent_agent
 
     seq = 0
     # 快照累积状态：正文按事件逐块累加，达阈值后整体落到 mg_chat_turn_events。
@@ -413,7 +413,7 @@ async def _run_chat_job(
     hb_task = asyncio.create_task(_heartbeat_loop(job_id))
     try:
         # 获取智能体
-        ua = await user_agent_controller.get_accessible(agent_id, user_id)
+        ua = await get_accessible_agent(agent_id, user_id)
         # 如果智能体不存在或无权限，则返回错误
         if not ua:
             await _append_event(job_id, seq, {"type": "error", "content": "智能体不存在或无权限"})

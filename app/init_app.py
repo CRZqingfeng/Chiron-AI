@@ -23,8 +23,17 @@ from app.models.admin import Api, Menu, Role
 from app.schemas.menus import MenuType
 from app.settings.config import settings
 
-from .middlewares import BackGroundTaskMiddleware, HttpAuditLogMiddleware, SecurityHeadersMiddleware
-from .schema_patches import apply_schema_patches
+from app.core.middlewares import (
+    BackGroundTaskMiddleware,
+    HttpAuditLogMiddleware,
+    SecurityHeadersMiddleware,
+)
+from app.core.schema_patches import apply_schema_patches
+
+# 各业务域在 import 时把自己的 schema 补丁登记到 core（避免 core 反向依赖）。
+# 漏了某一行，那个域的补丁就不会执行，而且**不会报错**——只会在启动日志里少一条
+# 「schema 补丁已应用」。新增业务补丁时记得在这里补 import。
+import app.mcp_client.patches  # noqa: F401  # 100_mcp_preset_confirm_policy
 
 
 def make_middlewares():
