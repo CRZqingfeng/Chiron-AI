@@ -73,6 +73,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("search_knowledge_by_image", "kb", "app/kb/image_search_tool.py"),
     # 会话记忆（受 CHAT_USE_SESSION_MEMORY 控制）
     ToolSpec("search_session_memory", "memory", "app/chat/memory_tool.py"),
+    # 跨会话长期记忆（U7，受 CHAT_MEMORY_CURATION_ENABLED + USER_SCOPE_ENABLED 控制）
+    ToolSpec("search_long_term_memory", "memory", "app/chat/memory_tool.py"),
     # 工作区（受 workspace 是否创建 + interrupt_on 控制）
     ToolSpec("workspace_list_dir", "workspace", "app/workspace/tools.py"),
     ToolSpec("workspace_read_file", "workspace", "app/workspace/tools.py"),

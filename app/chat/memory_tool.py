@@ -87,3 +87,67 @@ def make_search_session_memory_tool(
         ),
         func=_search_session_memory,
     )
+
+
+def make_search_long_term_memory_tool(
+    user_id: int,
+    agent_id: int,
+) -> StructuredTool:
+    """跨会话长期记忆检索工具（U7）。
+
+    为什么不与会话记忆合并成一个工具：两者语义不同——`search_session_memory` 查的是
+    「本会话早期说过什么」，本工具查的是「以往所有会话里确认过的稳定事实」。
+    合并会让模型分不清该查哪个；配额也会打架（一个限一次，合并后就是二选一）。
+    """
+    from app.core.turn_runtime import try_acquire_long_term_memory_tool_slot
+
+    def _search_long_term_memory(query: str) -> str:
+        from app.chat.memory_search import search_long_term_memory
+
+        if not try_acquire_long_term_memory_tool_slot():
+            limit_msg = (
+                "TOOL_CALL_LIMIT_REACHED: search_long_term_memory has already been called once "
+                "in this turn. Use the existing result and answer directly."
+            )
+            log_kb_tool_return_to_terminal(limit_msg, tool_label="search_long_term_memory")
+            return limit_msg
+
+        emit_rag_step("🧠", "长期记忆检索", (query or "")[:120])
+        try:
+            text, trace = search_long_term_memory(query.strip(), user_id=user_id, agent_id=agent_id)
+            _set_last_rag_context({"rag_trace": trace})
+        except Exception as e:  # noqa: BLE001 - 记忆检索失败不该中断回答
+            emit_rag_step("⚠️", "长期记忆检索失败", str(e)[:200])
+            err = f"长期记忆检索出错：{e}"
+            _set_last_rag_context(
+                {
+                    "rag_trace": {
+                        "tool_used": True,
+                        "tool_name": "search_long_term_memory",
+                        "query": query,
+                        "error": str(e),
+                    }
+                }
+            )
+            log_kb_tool_return_to_terminal(err, tool_label="search_long_term_memory")
+            return err
+
+        log_kb_tool_return_to_terminal(text, tool_label="search_long_term_memory")
+        return text
+
+    return StructuredTool.from_function(
+        name="search_long_term_memory",
+        description=(
+            "检索**以往所有会话**里积累的、关于当前用户/这个项目的稳定事实"
+            "（技术栈、工具偏好、工作约定、已做的技术决策）。"
+            "何时应主动调用："
+            "（1）用户提到「之前说过/我们约定过/上次定的」而当前会话里没有这段内容；"
+            "（2）需要知道用户的既有偏好或环境约定（用什么数据库、什么终端、什么习惯）；"
+            "（3）要做的决策可能受用户已表达过的偏好约束。"
+            "何时不必调用：问题只依赖当前会话的上下文；或要查知识库文档（用 search_knowledge_base）；"
+            "或要查本会话更早的原文（用 search_session_memory）。"
+            "说明：系统可能已自动注入部分长期记忆；若仍不足再使用本工具。"
+            "约束：同一用户提问轮次内最多成功调用一次。"
+        ),
+        func=_search_long_term_memory,
+    )

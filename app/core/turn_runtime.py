@@ -26,6 +26,7 @@ class _RequestState:
         "last_rag_context",
         "knowledge_calls",
         "memory_calls",
+        "long_term_memory_calls",
         "image_kb_calls",
         "web_search_calls",
         "web_image_search_calls",
@@ -42,6 +43,7 @@ class _RequestState:
         self.last_rag_context: dict | None = None
         self.knowledge_calls = 0
         self.memory_calls = 0
+        self.long_term_memory_calls = 0
         self.image_kb_calls = 0
         self.web_search_calls = 0
         self.web_image_search_calls = 0
@@ -119,6 +121,7 @@ def reset_tool_call_guards() -> None:
     state = _state()
     state.knowledge_calls = 0
     state.memory_calls = 0
+    state.long_term_memory_calls = 0
     state.image_kb_calls = 0
     state.web_search_calls = 0
     state.web_image_search_calls = 0
@@ -191,6 +194,19 @@ def try_acquire_memory_tool_slot() -> bool:
     if state.memory_calls >= 1:
         return False
     state.memory_calls += 1
+    return True
+
+
+def try_acquire_long_term_memory_tool_slot() -> bool:
+    """同一轮对话仅允许一次**长期记忆**检索；成功占用返回 True。
+
+    与会话记忆配额分开计：两者语义不同（"本会话早期说过什么" vs "以往会话的稳定事实"），
+    共用一个计数会让模型被迫二选一，而正确答案往往是两边都要看。
+    """
+    state = _state()
+    if state.long_term_memory_calls >= 1:
+        return False
+    state.long_term_memory_calls += 1
     return True
 
 
