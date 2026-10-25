@@ -2,6 +2,7 @@ import { nextTick, ref } from 'vue'
 import api from '@/api'
 import { getToken } from '@/utils'
 import { buildThinkingItemsFromRow } from '@/utils/agentChatThinking'
+import { keepLatestApprovalOnly } from '@/utils/agentChatApproval'
 import { useAgentSidebarStore } from '@/store'
 import { clearPendingChatJob } from './useChatJobStream.js'
 
@@ -123,7 +124,9 @@ export function useChatMessages({
     const res = await api.getAgentChatSessionMessages(agentId, sid)
     const rows = res.data?.messages || []
     const list = rows.map(mapRow)
-    messages.value = list
+    // 历史脏数据可能留下多张待确认卡片：只保留最后一条，否则用户点旧卡只会得到
+    // 「审批已失效」，而卡片本身既点不动也删不掉
+    messages.value = keepLatestApprovalOnly(list)
     sessionId.value = sid
     sessionPhase.value = list.length > 0 ? 'chat' : 'intro'
     await nextTick()
@@ -147,7 +150,7 @@ export function useChatMessages({
           row.thinkingOpen = old.thinkingOpen
         }
       })
-      messages.value = list
+      messages.value = keepLatestApprovalOnly(list)
       await nextTick()
       // 尊重粘底意图：流式期间上翻阅读的用户，完成后不再被强制拉回底部
       scrollBodyToBottom()

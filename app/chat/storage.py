@@ -192,6 +192,51 @@ class ConversationStorage:
         return meta
 
     @staticmethod
+    def _merge_thinking(prev_row, fields: dict) -> dict:
+        """把「中断前已落库的思考区」与「续跑这轮新产生的」拼起来。
+
+        为什么必须合并而不是覆盖：审批中断跨越**两次独立的 collector**。
+        中断那轮把前半段思考区写进了待确认消息，resume 这轮 collector 是全新的，
+        只包含中断之后的片段——直接覆盖会让整段思考区消失，用户点开只剩
+        「暂无检索步骤」。这是 D-042 两个修复（A 原地覆盖 + B 落思考区）
+        互相打脸的后果，2026-10-25 实测复现过。
+
+        合并规则：
+        - `thinking_items` / `rag_steps`：旧的在前、新的在后，直接拼接（两轮不重叠）
+        - `thinking_items` 里的 `todo` 项只留**最后一条**——清单是整表替换语义，
+          留两份会让回放出现两张待办列表
+        - 旧值缺失时原样返回新值；新值缺失时保留旧值（不能把已有内容清空）
+        """
+        prev_items = getattr(prev_row, "thinking_items", None) or []
+        cur_items = fields.get("thinking_items") or []
+        merged_items = [x for x in prev_items if isinstance(x, dict)]
+        merged_items += [x for x in cur_items if isinstance(x, dict)]
+        if merged_items:
+            last_todo = None
+            for idx, item in enumerate(merged_items):
+                if item.get("type") == "todo":
+                    last_todo = idx
+            if last_todo is not None:
+                merged_items = [
+                    item
+                    for idx, item in enumerate(merged_items)
+                    if item.get("type") != "todo" or idx == last_todo
+                ]
+
+        prev_text = getattr(prev_row, "thinking_text", None) or ""
+        cur_text = fields.get("thinking_text") or ""
+
+        prev_steps = getattr(prev_row, "rag_steps", None) or []
+        cur_steps = fields.get("rag_steps") or []
+
+        return {
+            **fields,
+            "thinking_items": merged_items or None,
+            "thinking_text": (prev_text + cur_text) or None,
+            "rag_steps": ([x for x in prev_steps] + [x for x in cur_steps]) or None,
+        }
+
+    @staticmethod
     def _parse_extra(extra: dict | None) -> dict:
         """从 extra_message_data 项提取可落库字段（kb_preselect 无对应列，与旧 save 一样不入库）。"""
         extra = extra or {}
@@ -436,9 +481,13 @@ class ConversationStorage:
         ai_message,
         extra: dict | None = None,
         metadata: dict | None = None,
+        merge_thinking: bool = False,
     ) -> bool:
         """
         原地覆盖目标助手消息内容与 extras（MCP 高危确认续跑用，不产生新版本）。
+        :param merge_thinking: True 时把已有思考区与新内容**合并**而非覆盖。
+            审批中断续跑必须传 True——中断那轮落的思考区在另一条路径上，
+            覆盖会让用户点开思考区只看到「暂无检索步骤」。普通重生成不能传 True。
         :return: 目标非法时返回 False
         """
         db = SessionLocal()
@@ -450,6 +499,8 @@ class ConversationStorage:
             if not row or row.session_ref_id != session.id or row.message_type != "ai":
                 return False
             fields = self._parse_extra(extra)
+            if merge_thinking:
+                fields = self._merge_thinking(row, fields)
             preview = msg_content_to_str(getattr(ai_message, "content", ""))
             if len(preview) > 65500:
                 preview = preview[:65500] + "…"
