@@ -302,6 +302,13 @@ def _build_tools_legacy(
     # ⑦ 会话记忆工具
     if getattr(settings, "CHAT_USE_SESSION_MEMORY", True):
         tools.append(make_search_session_memory_tool(user_id, agent_id, session_id, llm_config))
+    # ⑦b 跨会话长期记忆工具（U7）。与会话记忆并列而非替代：语义不同，配额也独立。
+    from app.chat.memory_curation import user_scope_enabled
+
+    if user_scope_enabled():
+        from app.chat.memory_tool import make_search_long_term_memory_tool
+
+        tools.append(make_search_long_term_memory_tool(user_id, agent_id))
     # ⑧ MCP 外部传入
     if extra_tools:
         tools.extend(extra_tools)
@@ -917,22 +924,57 @@ async def _prefetch_session_memory(
     agent_id: int,
     session_id: str,
 ) -> str | None:
-    """会话记忆的主动注入文本（跨轮的长期记忆）。"""
+    """主动注入 System 的记忆文本。
+
+    U7 起是**两段**拼起来的：
+    1. 会话级（本会话较早的原话摘录）—— 受 `CHAT_USE_SESSION_MEMORY` 控制
+    2. 用户级（以往会话提炼出的稳定事实）—— 受 `CHAT_MEMORY_*` 控制
+
+    两段各自独立取，任何一段为空都不影响另一段——这很重要：会话级依赖 compact
+    触发（苛刻），用户级依赖 curation（宽松），混在一个条件里会让用户级被会话级的
+    "还没到阈值" 拖累成空。
+    """
     from app.chat.memory_search import proactive_session_memory_inject_text
 
-    if not getattr(settings, "CHAT_USE_SESSION_MEMORY", True):
-        return None
-    if not getattr(settings, "CHAT_MEMORY_PROACTIVE_INJECT", True):
-        return None
-    llm_cfg = _sub_llm_config_from_ua(ua)
-    return await asyncio.to_thread(
-        proactive_session_memory_inject_text,
-        preselect_query,
-        user_id=user_id,
-        agent_id=agent_id,
-        session_id=session_id,
-        llm_config=llm_cfg,
-    )
+    # 会话级
+    session_part: str | None = None
+    if getattr(settings, "CHAT_USE_SESSION_MEMORY", True) and getattr(
+        settings, "CHAT_MEMORY_PROACTIVE_INJECT", True
+    ):
+        llm_cfg = _sub_llm_config_from_ua(ua)
+        session_part = await asyncio.to_thread(
+            proactive_session_memory_inject_text,
+            preselect_query,
+            user_id=user_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            llm_config=llm_cfg,
+        )
+
+    # 用户级（跨会话）
+    user_part: str | None = None
+    from app.chat.memory_curation import user_scope_enabled
+
+    if user_scope_enabled():
+        from app.chat.memory_search import (
+            format_user_memory_hits,
+            retrieve_user_memory_hits,
+        )
+
+        top_k = max(1, int(getattr(settings, "CHAT_MEMORY_USER_SCOPE_INJECT_TOP_K", 3) or 3))
+        hits = await asyncio.to_thread(
+            retrieve_user_memory_hits,
+            preselect_query,
+            user_id=user_id,
+            agent_id=agent_id,
+            top_k=top_k,
+        )
+        if hits:
+            user_part = format_user_memory_hits(hits)
+
+    if session_part and user_part:
+        return f"{user_part}\n\n{session_part}"
+    return user_part or session_part
 
 
 async def _open_workspace_for_turn(
@@ -1352,8 +1394,9 @@ async def _finish_completed(
     regen_target_ai_id: int | None,
     mcp_approved_pending_id: str | None,
     kb_preselect_meta: dict,
+    llm_config: dict | None = None,
 ) -> AsyncIterator[dict]:
-    """正常收尾：取检索上下文 → 发 trace/sources/待确认 → 落库 → 归档记忆。"""
+    """正常收尾：取检索上下文 → 发 trace/sources/待确认 → 落库 → 归档记忆 → 提炼长期记忆。"""
     # 获取 RAG 上下文（顺带清空，避免串到下一轮）
     rag_context = get_last_rag_context(clear=True)
     rag_trace = rag_context.get("rag_trace") if rag_context else None
@@ -1439,8 +1482,14 @@ async def _finish_completed(
             user_id, agent_id, session_id, [ai_msg], extra_message_data=[ai_extra]
         )
 
-    # 归档会话记忆，按配置同步或后台线程归档
+    # 归档会话记忆（原话切片 → Milvus），按配置同步或后台线程
     schedule_archive_session_memory(user_id, agent_id, session_id)
+    # U7：提炼跨会话长期记忆。与归档是两条独立的水位线：
+    # archive 按"离开 compact 窗口"触发（苛刻），curation 按"攒够未提炼轮数"（宽松）。
+    if llm_config:
+        from app.chat.memory_curation import schedule_curate_session_memories
+
+        schedule_curate_session_memories(user_id, agent_id, session_id, llm_config)
 
     yield {"type": "done", "cancelled": False}
 
@@ -1779,6 +1828,10 @@ async def iter_chat_stream_events(
             yield event
         return
 
+    # curation 需要 LLM 配置。build_model_and_agent 内部算过一份但没返回，
+    # 这里单独取（纯读配置 + 解密，无网络开销）。
+    memory_llm_config = _sub_llm_config_from_ua(ua)
+
     async for event in _finish_completed(
         collector,
         outcome,
@@ -1791,6 +1844,7 @@ async def iter_chat_stream_events(
         regen_target_ai_id=regen_target_ai_id,
         mcp_approved_pending_id=mcp_approved_pending_id,
         kb_preselect_meta=kb_preselect_meta,
+        llm_config=memory_llm_config,
     ):
         yield event
 

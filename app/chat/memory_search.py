@@ -209,3 +209,124 @@ def proactive_session_memory_inject_text(
         tx = (h.get("text") or "").strip()
         lines.append(f"[{i}] 轮次 {ti}：\n{tx}")
     return "\n\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# U7：跨会话长期记忆检索
+# ---------------------------------------------------------------------------
+
+
+def _parse_memitem_id(chunk_id: str) -> int | None:
+    """从 `memitem_{pg_id}` 里解出 PG 主键。"""
+    cid = (chunk_id or "").strip()
+    if not cid.startswith("memitem_"):
+        return None
+    try:
+        return int(cid[len("memitem_") :])
+    except (TypeError, ValueError):
+        return None
+
+
+def retrieve_user_memory_hits(
+    query: str,
+    *,
+    user_id: int,
+    agent_id: int,
+    top_k: int,
+) -> list[dict[str, Any]]:
+    """用户级（跨会话）记忆的语义检索。失败返回空列表，绝不抛。
+
+    **Milvus 为主、PG 兜底**：双写允许落后（`embedding_synced=false` 的条目还没进
+    Milvus），如果只查 Milvus，用户会遇到"明明记过却查不到"。所以命中为空时
+    回退到 PG 最近更新的几条——语义上不如向量检索准，但保证"记忆不丢"。
+    """
+    from app.chat.memory_curation import memory_user_scope, user_scope_enabled
+    from app.chat.memory_store import list_active, list_by_ids
+
+    if not user_scope_enabled():
+        return []
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    hits: list[dict[str, Any]] = []
+    if (settings.EMBEDDING_API_KEY or "").strip():
+        try:
+            embedder = get_multimodal_embedding_service()
+            dense = embedder.get_text_embeddings([q[:8000]])
+            milvus = get_chat_memory_milvus()
+            milvus.init_collection()
+            scope = memory_user_scope(user_id, agent_id)
+            raw = milvus.hybrid_retrieve(
+                dense[0],
+                q[:8000],
+                top_k=max(1, top_k),
+                filter_expr=f'memory_scope == "{scope}"',
+            )
+            ids = [i for i in (_parse_memitem_id(h.get("chunk_id", "")) for h in raw) if i]
+            meta = list_by_ids(user_id, agent_id, ids)
+            for h in raw:
+                mid = _parse_memitem_id(h.get("chunk_id", ""))
+                if not mid:
+                    continue
+                row = meta.get(mid)
+                # 只认 active：Milvus 的删除是异步生效的，可能短暂残留已失效条目
+                if not row or row.get("status") != "active":
+                    continue
+                hits.append(
+                    {
+                        "id": mid,
+                        "text": row["text"],
+                        "mem_key": row["mem_key"],
+                        "kind": row["kind"],
+                        "score": h.get("score", 0.0),
+                        "source": "milvus",
+                    }
+                )
+        except Exception:
+            logger.exception("retrieve_user_memory_hits: milvus 失败，回退 PG")
+
+    if not hits:
+        for row in list_active(user_id, agent_id, limit=max(1, top_k)):
+            hits.append(
+                {
+                    "id": row["id"],
+                    "text": row["text"],
+                    "mem_key": row["mem_key"],
+                    "kind": row["kind"],
+                    "score": None,
+                    "source": "pg_recent",
+                }
+            )
+    return hits
+
+
+def format_user_memory_hits(hits: list[dict[str, Any]]) -> str:
+    """把命中条目格式化成给模型看的文本。"""
+    if not hits:
+        return ""
+    lines = ["[长期记忆] 以下是关于这位用户/这个项目、在以往会话中确认过的事实："]
+    for i, h in enumerate(hits, 1):
+        lines.append(f"[{i}]（{h.get('kind')}）{h.get('text')}")
+    return "\n".join(lines)
+
+
+def search_long_term_memory(
+    query: str,
+    *,
+    user_id: int,
+    agent_id: int,
+) -> tuple[str, dict[str, Any]]:
+    """工具入口：返回 (格式化文本, trace)。"""
+    trace: dict[str, Any] = {
+        "tool_used": True,
+        "tool_name": "search_long_term_memory",
+        "query": query,
+    }
+    top_k = max(1, int(getattr(settings, "CHAT_MEMORY_USER_SCOPE_SEARCH_TOP_K", 5) or 5))
+    hits = retrieve_user_memory_hits(query, user_id=user_id, agent_id=agent_id, top_k=top_k)
+    trace["hit_count"] = len(hits)
+    trace["source"] = hits[0]["source"] if hits else None
+    if not hits:
+        return ("以往会话中没有相关的长期记忆。", trace)
+    return (format_user_memory_hits(hits), trace)

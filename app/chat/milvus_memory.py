@@ -203,6 +203,24 @@ class ChatMemoryMilvusManager:
         expr = memory_filter_expr(memory_scope)
         self._get_client().delete(collection_name=self.collection_name, filter=expr)
 
+    def delete_by_chunk_ids(self, chunk_ids: list[str]) -> int:
+        """按 chunk_id 精确删除（U7 用户级记忆条目用）。
+
+        为什么不用整 scope 清空：用户级记忆是一个 scope 里几百条互相独立的条目，
+        改一条、删一条都不该影响其它条目。chunk_id 取 ``memitem_{pg_id}``，
+        与 PG 主键一一对应，删除后不会误伤。
+
+        :return: 实际下发的删除条数（Milvus 的 delete 是异步生效的，不等于立即不可查）
+        """
+        ids = [c for c in (chunk_ids or []) if c]
+        if not ids:
+            return 0
+        quoted = ", ".join('"' + c.replace('"', '\\"') + '"' for c in ids)
+        self._get_client().delete(
+            collection_name=self.collection_name, filter=f"chunk_id in [{quoted}]"
+        )
+        return len(ids)
+
     def collection_exists(self) -> bool:
         return self._get_client().has_collection(self.collection_name)
 

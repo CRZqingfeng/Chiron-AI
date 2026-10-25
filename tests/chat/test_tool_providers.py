@@ -92,23 +92,29 @@ class ProviderRegistryTests(unittest.TestCase):
 
 
 class ToolCountTests(_Base):
-    """T4~T7：组合后的工具集合必须与改造前一致。"""
+    """T4~T7：组合后的工具集合数量。
+
+    数字会随工具增减而变，变更时必须同步改这里——这是刻意的：
+    数量断言的意义是「让新增工具必须被显式确认」，而不是「永远等于某个魔数」。
+    U7 加了 search_long_term_memory，各档位 +1（12→13 / 9→10 / 13→14）。
+    """
 
     def test_default_with_workspace(self):
         names = self.names()
-        self.assertEqual(len(names), 12)
+        self.assertEqual(len(names), 13)
+        self.assertIn("search_long_term_memory", names)
         self.assertIn("workspace_write_file", names)
         # 没有 interrupt_on 时不注册执行命令工具（安全约束）
         self.assertNotIn("workspace_run_command", names)
 
     def test_without_workspace(self):
         names = self.names(workspace=None)
-        self.assertEqual(len(names), 9)
+        self.assertEqual(len(names), 10)
         self.assertFalse([n for n in names if n.startswith("workspace_")])
 
     def test_with_approval_registers_exec(self):
         names = self.names(interrupt_on={"workspace_run_command": True})
-        self.assertEqual(len(names), 13)
+        self.assertEqual(len(names), 14)
         self.assertIn("workspace_run_command", names)
 
     def test_web_disabled(self):
@@ -124,6 +130,14 @@ class ToolCountTests(_Base):
         with mock.patch("app.settings.settings.CHAT_USE_SESSION_MEMORY", False):
             names = self.names()
         self.assertNotIn("search_session_memory", names)
+        # 关掉会话记忆不该连带关掉长期记忆：两者触发条件与开关都独立
+        self.assertIn("search_long_term_memory", names)
+
+    def test_long_term_memory_disabled_keeps_session_memory(self):
+        with mock.patch("app.settings.settings.CHAT_MEMORY_CURATION_ENABLED", False):
+            names = self.names()
+        self.assertNotIn("search_long_term_memory", names)
+        self.assertIn("search_session_memory", names)
 
     def test_extra_tools_flow_through_mcp_provider(self):
         """MCP 工具必须走同一装配流程，不是单独 extend。"""

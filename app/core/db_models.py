@@ -20,6 +20,8 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
+    Float,
     DateTime,
     ForeignKey,
     Index,
@@ -27,6 +29,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -202,3 +205,65 @@ class ChatTurnEvent(Base):
     # 用通用 JSON 而非 JSONB：payload 从不参与查询/索引，且这样单测可用 sqlite 建表
     payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ChatMemoryItem(Base):
+    """**跨会话**的长期记忆条目（U7）。与会话级记忆是两套东西，别混。
+
+    区别：
+    - 会话级（`chiron_ai_chat_memory` 集合，scope `u{u}_a{a}_s{sid}`）存的是**原话切片**，
+      只在轮次被 compact 挤出原文窗口时归档，用来补"本会话早期说过什么"。
+    - 本表存的是**提炼过的事实**，跨会话可见，用来补"这个用户/这个智能体长期怎么做事"。
+
+    `mem_key` + **部分唯一索引**是整张表的核心设计：**按主题 upsert，不是无脑追加**。
+    没有它，三个月前"我用 MySQL"和现在"我换 PostgreSQL 了"会同时留在库里，
+    检索时随机命中一条。长期记忆必须是「可被改写的事实」，不是「只增不减的流水账」。
+
+    易错点：这里**不能**用普通 `UniqueConstraint`。改写时要保留旧值可追溯
+    （旧行标 `status='superseded'`、新行 `active`），普通唯一约束会让两条同 key 的行
+    无法共存。所以用 `WHERE status='active'` 的**部分唯一索引**——既能保证"同时只有
+    一条生效"，又允许历史版本留存。
+
+    `embedding_synced=false` 的记录由后台补扫同步到 Milvus——双写不追求强一致，
+    PG 是真相源，Milvus 落后最多导致"召回少一条"。
+    """
+
+    __tablename__ = "mg_chat_memories"
+    __table_args__ = (
+        # 只约束「生效中的那条」唯一，历史版本（superseded）可以多条共存
+        Index(
+            "uq_mem_active",
+            "user_id",
+            "agent_id",
+            "mem_key",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        Index("ix_mem_user_agent_status", "user_id", "agent_id", "status"),
+        Index("ix_mem_embedding_synced", "embedding_synced"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 主题键：稳定标识「这条记忆说的是哪件事」，同类事实靠它覆盖
+    mem_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    # fact / preference / convention / decision
+    kind: Mapped[str] = mapped_column(String(24), nullable=False, default="fact")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.8)
+    # 来源可追溯：用户要能问「你凭什么记这条」
+    source_session: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_turn_key: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # active / superseded / deleted
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    embedding_synced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )

@@ -227,10 +227,16 @@ class Settings(BaseSettings):
     CHAT_USE_SESSION_MEMORY: bool = True
     CHAT_MEMORY_WINDOW_TURNS: int = 10  # 仅当 CHAT_COMPACT_ENABLED=false 时作为滑动窗口轮数
     CHAT_COMPACT_ENABLED: bool = True
-    # 估算 prompt（tools 粗估 + system + 摘要 + 原文 + 回包余量）达到该字符数则触发压缩
-    CHAT_COMPACT_TRIGGER_CHARS: int = 80000
-    # 压缩后保留的最近原文（字符）；须明显小于 trigger
-    CHAT_COMPACT_KEEP_CHARS: int = 24000
+    # 估算 prompt（tools 粗估 + system + 摘要 + 原文 + 回包余量）达到该字符数则触发压缩。
+    # 2026-10-25 从 80000 下调：实测 18 个会话最长仅 2298 字符、metadata 全空，
+    # 按 80000 需要「正文 >36000 字符 ≈ 14 轮以上」才触发，而真实使用强度远达不到 ——
+    # 结果是「会话记忆归档」这条链路从上线起一次都没跑过（Milvus 集合恒 0 行）。
+    # 45000 对应正文约 15000 字符 ≈ 6~7 轮，一次压缩可腾出约 15000 字符（≈6 轮），
+    # 不会每轮都触发。
+    CHAT_COMPACT_TRIGGER_CHARS: int = 45000
+    # 压缩后保留的最近原文（字符）；须明显小于 trigger。
+    # 跟着从 24000 下调：若保留 24000，45000 只剩 1000 可压空间，会陷入「每轮触发但几乎压不动」。
+    CHAT_COMPACT_KEEP_CHARS: int = 10000
     CHAT_COMPACT_HEADROOM_CHARS: int = 12000
     CHAT_COMPACT_TOOLS_ESTIMATE_CHARS: int = 8000
     # 单块归档字符上限（略小于原默认，减轻单条向量上下文过长）
@@ -241,6 +247,24 @@ class Settings(BaseSettings):
     CHAT_MEMORY_PROACTIVE_TOP_K: int = 3
     # 归档在对话落库后后台执行，不阻塞响应
     CHAT_MEMORY_ARCHIVE_ASYNC: bool = True
+
+    # ---- U7 跨会话记忆沉淀（curation）----
+    # 总开关。关闭后：不提炼、不注入、工具也不注册，纯回退到"只有会话级记忆"。
+    CHAT_MEMORY_CURATION_ENABLED: bool = True
+    # 攒够多少「未提炼轮次」触发一次提炼。设太小会把寒暄也提炼成事实。
+    CHAT_MEMORY_CURATION_MIN_TURNS: int = 5
+    # 单次最多提炼几条。防止一次对话刷出十几条把注入位挤满。
+    CHAT_MEMORY_CURATION_MAX_ITEMS: int = 6
+    # 单用户单智能体最多保留多少条 active 记忆，超了淘汰 confidence 最低的。
+    CHAT_MEMORY_CURATION_MAX_ACTIVE: int = 200
+    # 提炼在后台线程执行（与 archive 一致），不阻塞响应
+    CHAT_MEMORY_CURATION_ASYNC: bool = True
+    # 检索时是否把用户级记忆并入结果
+    CHAT_MEMORY_USER_SCOPE_ENABLED: bool = True
+    # 主动注入 System 的用户级记忆条数
+    CHAT_MEMORY_USER_SCOPE_INJECT_TOP_K: int = 3
+    # search_long_term_memory 工具返回条数
+    CHAT_MEMORY_USER_SCOPE_SEARCH_TOP_K: int = 5
 
     # 知识库文档上传任务：后台线程处理，上传接口立即返回 task_id，前端轮询进度
     KB_UPLOAD_JOB_TTL_SECONDS: int = 86400

@@ -301,6 +301,14 @@ async def delete_user_agent(agent_id: int = Query(..., description="智能体 ID
         purge_kb_for_scope(kb_scope_for(user_id, aid), user_id, aid)
     except Exception:
         pass
+    try:
+        # U7：智能体没了，它的跨会话记忆也没意义（与会话不同——删会话时记忆保留，
+        # 因为记忆是提炼过的事实，不该随原始对话消失）。
+        from app.chat.memory_curation import purge_memories_for_agent
+
+        await asyncio.to_thread(purge_memories_for_agent, user_id, aid)
+    except Exception:
+        logger.exception("purge_memories_for_agent user_id=%s agent_id=%s", user_id, aid)
     return Success(msg="删除成功")
 
 
