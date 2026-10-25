@@ -49,6 +49,19 @@ class RedisCache:
             logger.warning("Redis get_json 失败 key={}: {}", key, e)
             return None
 
+    def exists(self, key: str) -> Optional[bool]:
+        """键是否存在。返回 None 表示无法判断（Redis 不可用）。
+
+        与 get_json 的差别：get_json 把「键不存在」和「读失败」都收敛成 None。
+        需要区分这两者的调用方（如 Job 存活判定：读失败要保守放行，键不存在才判死）
+        必须用本方法。
+        """
+        try:
+            return bool(self._get_client().exists(self._key(key)))
+        except Exception as e:
+            logger.warning("Redis exists 失败 key={}: {}", key, e)
+            return None
+
     def set_json(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
         """
         将 Python 对象序列化转换为 JSON 字符串，并存储到 Redis 中

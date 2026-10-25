@@ -109,7 +109,7 @@ async def init_superuser():
         )
         admin.is_superuser = True
         await admin.save()
-        logger.info("已创建初始管理员用户: %s", settings.INITIAL_ADMIN_USERNAME)
+        logger.info("已创建初始管理员用户: {}", settings.INITIAL_ADMIN_USERNAME)
 
 
 async def init_menus():
@@ -305,7 +305,7 @@ async def restrict_normal_role_api_grants():
     excessive = [a for a in await user_role.apis if (a.tags or "") in admin_only_tags]
     if excessive:
         await user_role.apis.remove(*excessive)
-        logger.warning("安全收紧：已收回「普通用户」角色的 %d 个管理类 API 授权", len(excessive))
+        logger.warning("安全收紧：已收回「普通用户」角色的 {} 个管理类 API 授权", len(excessive))
 
 
 async def init_data():

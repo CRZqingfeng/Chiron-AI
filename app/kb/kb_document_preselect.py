@@ -5,13 +5,12 @@ from __future__ import annotations
 import textwrap
 from typing import Any
 
-from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
-from app.chat.tools import emit_rag_step
+from app.core.turn_runtime import emit_rag_step
 from app.kb.rag_utils import KB_MAX_DOCUMENT_FILTER
 from app.settings import settings
-from app.utils.egress import pinned_llm_client_kwargs
+from app.utils.llm_factory import LlmFactory
 
 
 class _DocPickOut(BaseModel):
@@ -27,19 +26,8 @@ def _pick_model(llm_config: dict[str, Any]):
     :param llm_config: 模型配置
     :return: 模型
     """
-    api = (llm_config.get("api_key") or "").strip()
-    if not api:
-        return None
-    name = (llm_config.get("model_name") or "gpt-4").strip()
-    return init_chat_model(
-        model=name,
-        model_provider="openai",
-        api_key=api,
-        base_url=(llm_config.get("base_url") or "").strip() or None,
-        temperature=0,
-        stream_usage=False,
-        **pinned_llm_client_kwargs((llm_config.get("base_url") or "").strip() or None),
-    )
+    # 缺 Key 时返回 None（由 try_chat 判空），调用方跳过选档
+    return LlmFactory.try_chat(llm_config)
 
 
 def run_kb_document_preselect(

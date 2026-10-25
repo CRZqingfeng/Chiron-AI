@@ -13,8 +13,8 @@ from typing import Any
 
 from sqlalchemy import func
 
-from app.chat.database import SessionLocal
-from app.chat.db_models import ChatAttachment as ChatAttachmentRow
+from app.core.db import SessionLocal
+from app.core.db_models import ChatAttachment as ChatAttachmentRow
 from app.core import object_storage as obs
 from app.settings import settings
 

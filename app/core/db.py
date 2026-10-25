@@ -1,8 +1,13 @@
 """
-PostgreSQL（聊天专用）SQLAlchemy 引擎与会话工厂。
+PostgreSQL（业务库）SQLAlchemy 引擎与会话工厂。
 
-SQLAlchemy 是一个强大的 SQL 工具包，提供了对象关系映射（ORM）、数据库连接池、事务管理等功能。
-SQLAlchemy 的模型定义与数据库表结构分离，通过 ORM 映射，可以方便地进行数据库操作。
+位置说明：从 `app/chat/database.py` 迁到 `app/core/db.py`。它管理的是**全业务域**
+共用的 Base / engine / SessionLocal——对话五表与知识库三表都挂在这同一个 Base 上，
+所以它不该住在 `app.chat` 下面（那会让 `app.kb` 必须 import `app.chat`）。
+
+建表约定：`create_all` 只创建「已 import 并注册到 Base.metadata」的表。
+因此 `init_db()` 里显式 import 两个模型模块——漏了就会静默少建表。
+KB 专属的 ALTER 语句放在 `app/kb/db_migrations.py`，由本函数回调。
 """
 
 from __future__ import annotations
@@ -45,12 +50,15 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 Base = declarative_base()  
 
 
-def init_chat_db() -> None:
+def init_db() -> None:
     """
     让 ORM 模型挂到 Base.metadata 上
-    在数据库里创建缺失的表（聊天库表结构）
+    在数据库里创建缺失的表（对话五表 + 知识库三表）
     """
-    import app.chat.db_models  # noqa: F401
+    # 关键：create_all 只建「已注册到 Base.metadata」的表。
+    # 这两个 import 就是注册动作，缺一个就会静默少建表。
+    import app.core.db_models  # noqa: F401
+    import app.kb.db_models  # noqa: F401
 
     from sqlalchemy import text
 
@@ -75,8 +83,9 @@ def init_chat_db() -> None:
         conn.execute(text("ALTER TABLE mg_chat_messages ADD COLUMN IF NOT EXISTS sources JSON"))
         conn.execute(text("ALTER TABLE mg_chat_messages ADD COLUMN IF NOT EXISTS thinking_text TEXT"))
         conn.execute(text("ALTER TABLE mg_chat_messages ADD COLUMN IF NOT EXISTS thinking_items JSON"))
+        # 审批中断：这条助手消息是「暂停等用户决定」的中间态，resume 到手后原地覆盖
         conn.execute(
-            text("ALTER TABLE mg_kb_documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)")
+            text("ALTER TABLE mg_chat_messages ADD COLUMN IF NOT EXISTS approval_pending JSON")
         )
         # 消息树：parent_id / selected_child_id（存量线性会话回填为单链树）
         conn.execute(
@@ -133,6 +142,11 @@ def init_chat_db() -> None:
                 "ALTER TABLE mg_chat_sessions ADD COLUMN IF NOT EXISTS path_message_count INTEGER"
             )
         )
+
+    # 知识库表的迁移放回知识库自己的包里，core 不写业务 DDL
+    from app.kb.db_migrations import migrate_kb_schema
+
+    migrate_kb_schema(engine)
 
 
 def get_db_session() -> Session:

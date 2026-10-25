@@ -26,7 +26,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
-from app.chat.cache import cache
+from app.core.cache import cache
 from app.settings import settings
 
 # 快照结构版本：SNAPSHOT_FIELDS 变更时必须 +1，否则旧键缺字段会被读出脏数据

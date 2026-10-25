@@ -50,8 +50,10 @@
                   :sending="sending"
                   :switching-branch="switchingBranch"
                   :confirming-mcp-ids="confirmingMcpIds"
+                  :approving-ids="approvingIds"
                   @toggle-thinking="toggleThinking"
                   @mcp-approve="approveMcpConfirmation"
+                  @approval-decide="decideApproval"
                   @md-click="onAgentMdClick"
                   @switch-version="switchAssistantVersion"
                   @regenerate="regenerateAssistant"
@@ -207,6 +209,7 @@ import { useChatComposer, MAX_CHAT_ATTACHMENTS, chatAttachmentIcon } from './use
 import { useChatJobStream, clearPendingChatJob } from './useChatJobStream.js'
 import { useChatMessages } from './useChatMessages.js'
 import { useChatMcpConfirm } from './useChatMcpConfirm.js'
+import { useChatApproval } from './useChatApproval.js'
 import api from '@/api'
 import { getToken } from '@/utils'
 import { renderAgentChatMarkdown } from '@/utils/agentChatMarkdown'
@@ -329,6 +332,16 @@ const { approveMcpConfirmation } = useChatMcpConfirm({
   messages,
   sending,
   confirmingMcpIds,
+  chatAgentId,
+  scrollBodyToBottom,
+  postChatJobAndConsumeStream,
+  getToken,
+  t,
+})
+
+const { decideApproval, approvingIds } = useChatApproval({
+  messages,
+  sending,
   chatAgentId,
   scrollBodyToBottom,
   postChatJobAndConsumeStream,
@@ -694,8 +707,12 @@ async function submitMessage() {
       assistantIdx: idx,
     })
     // 完成后重拉当前分支：新行拿到真实 messageId，才能重新生成/切版本
-    // （存在待确认的 MCP 调用时跳过重拉，避免确认按钮被历史行覆盖丢失）
-    if (!streamStoppedByUser.value && !messages.value[idx]?.mcpConfirmations?.length) {
+    // （存在待确认的 MCP 调用 / 工具审批时跳过重拉，避免确认按钮被历史行覆盖丢失）
+    if (
+      !streamStoppedByUser.value &&
+      !messages.value[idx]?.mcpConfirmations?.length &&
+      !messages.value[idx]?.approvalPending
+    ) {
       await reloadSessionMessages(agentId)
     }
   } catch (error) {

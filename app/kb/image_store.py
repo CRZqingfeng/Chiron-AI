@@ -13,8 +13,8 @@ from typing import List, Optional
 from sqlalchemy import select
 from loguru import logger
 
-from app.chat.database import SessionLocal
-from app.chat.db_models import KbImage
+from app.core.db import SessionLocal
+from app.kb.db_models import KbImage
 from app.core import object_storage as obs
 from app.settings import settings
 

@@ -263,22 +263,15 @@ async def test_sub_llm(body: SubLlmTestIn):
         if not api_key:
             return Fail(code=400, msg="该智能体尚未保存子智能体 API Key")
 
-    from langchain.chat_models import init_chat_model
     from langchain_core.messages import HumanMessage
 
-    from app.utils.egress import pinned_llm_client_kwargs
+    from app.utils.llm_factory import LlmFactory
 
     started = time.perf_counter()
     try:
-        model = init_chat_model(
-            model=body.model_name.strip(),
-            model_provider="openai",
-            api_key=api_key,
-            base_url=body.base_url,
+        model = LlmFactory.chat(
+            {"api_key": api_key, "base_url": body.base_url, "model_name": body.model_name.strip()},
             max_tokens=1,
-            temperature=0,
-            stream_usage=False,
-            **pinned_llm_client_kwargs(body.base_url),
         )
         await asyncio.wait_for(model.ainvoke([HumanMessage(content="ping")]), timeout=15)
     except asyncio.TimeoutError:

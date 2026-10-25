@@ -10,7 +10,7 @@ import uuid
 
 from langchain_core.tools import StructuredTool
 
-from app.chat.cache import cache
+from app.core.cache import cache
 from app.settings import settings
 
 _WRITE_ACTIONS = {
@@ -177,7 +177,7 @@ def wrap_mcp_tool_with_confirmation(tool: object, *, server_name: str, user_id: 
     args_schema = getattr(tool, "args_schema", None)
 
     async def _confirmed_coro(*args, _tool=tool, **kwargs):
-        from app.chat.tools import add_pending_mcp_confirmation, get_approved_mcp_pending_id
+        from app.core.turn_runtime import add_pending_mcp_confirmation, get_approved_mcp_pending_id
 
         payload = _call_payload(args, kwargs)
         approved_id = get_approved_mcp_pending_id(clear=False)

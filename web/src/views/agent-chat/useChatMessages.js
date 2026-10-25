@@ -80,6 +80,20 @@ export function mapHistoryRow(row, i, t) {
     const att = attachmentsFromHistoryRow(row, t)
     if (att) base.attachments = att
   }
+  // 审批中断的消息：刷新后要把卡片还原出来，否则用户再也点不到「允许」。
+  // 后端存在 mg_chat_messages.approval_pending，由 MessageInfo 透传上来。
+  if (row.approval_pending) {
+    const ap = row.approval_pending
+    base.approvalPending = {
+      interruptId: ap.interrupt_id || null,
+      actions: Array.isArray(ap.actions) ? ap.actions : [],
+      allowedDecisions: Array.isArray(ap.allowed_decisions)
+        ? ap.allowed_decisions
+        : ['approve', 'reject'],
+      threadId: ap.thread_id || null,
+      messageId: row.message_id ?? null,
+    }
+  }
   return base
 }
 
@@ -208,7 +222,10 @@ export function useChatMessages({
         assistantIdx,
         targetMessageId: assistantMsg.messageId,
       })
-      if (!streamStoppedByUser.value && !messages.value[assistantIdx]?.mcpConfirmations?.length) {
+      // 有待确认的调用（MCP 或工具审批）时跳过重拉：历史行会覆盖掉确认卡片，
+      // 用户就再也点不到「允许」了
+      const row = messages.value[assistantIdx]
+      if (!streamStoppedByUser.value && !row?.mcpConfirmations?.length && !row?.approvalPending) {
         await reloadSessionMessages(agentId)
       }
     } catch (error) {

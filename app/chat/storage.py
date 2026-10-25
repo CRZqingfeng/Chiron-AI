@@ -10,12 +10,12 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from sqlalchemy import desc
 from sqlalchemy.exc import IntegrityError
 
-from app.chat.cache import cache
-from app.chat.database import SessionLocal
-from app.chat.db_models import ChatAttachment as ChatAttachmentRow
-from app.chat.db_models import ChatMessage as ChatMessageRow
-from app.chat.db_models import ChatSession as ChatSessionRow
-from app.chat.message_codec import envelope_to_langchain_message, msg_content_to_str, serialize_message_envelope
+from app.core.cache import cache
+from app.core.db import SessionLocal
+from app.core.db_models import ChatAttachment as ChatAttachmentRow
+from app.core.db_models import ChatMessage as ChatMessageRow
+from app.core.db_models import ChatSession as ChatSessionRow
+from app.core.message_codec import envelope_to_langchain_message, msg_content_to_str, serialize_message_envelope
 from app.chat.preview_session import (
     EDITOR_PREVIEW_SESSION_PREFIX,
     is_editor_preview_session,
@@ -134,6 +134,7 @@ class ConversationStorage:
             "sources": row.sources,
             "thinking_text": row.thinking_text,
             "thinking_items": row.thinking_items,
+            "approval_pending": row.approval_pending,
         }
         if env:
             item["content_json"] = env
@@ -206,6 +207,7 @@ class ConversationStorage:
             "sources": extra.get("sources"),
             "thinking_text": extra.get("thinking_text"),
             "thinking_items": extra.get("thinking_items"),
+            "approval_pending": extra.get("approval_pending"),
         }
 
     def _session_query(self, db, user_id: int, agent_id: int, session_id: str):
@@ -278,6 +280,7 @@ class ConversationStorage:
             sources=fields["sources"],
             thinking_text=fields["thinking_text"],
             thinking_items=fields["thinking_items"],
+            approval_pending=fields["approval_pending"],
         )
         db.add(row)
         return row
@@ -460,6 +463,7 @@ class ConversationStorage:
             row.sources = fields["sources"]
             row.thinking_text = fields["thinking_text"]
             row.thinking_items = fields["thinking_items"]
+            row.approval_pending = fields["approval_pending"]
             self._commit_and_refresh_caches(db, session, user_id, agent_id, session_id)
             return True
         finally:

@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
-from langchain.chat_models import init_chat_model
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from app.chat.message_codec import expand_human_image_refs, msg_content_to_str
+from app.core.message_codec import expand_human_image_refs, msg_content_to_str
 from app.models.user_agent import UserAgent
 from app.settings import settings
+from app.utils.llm_factory import LlmFactory
 
 _CAPTION_SYSTEM_PROMPT = """你是图片理解助手。用户会附带图片和一段问题，你的任务是「读图」，不是直接回答。
 
@@ -38,20 +38,20 @@ def _caption_timeout_seconds() -> int:
 
 
 def _build_caption_model(ua: UserAgent) -> Any:
-    """无工具视觉模型：主配置 + 客户端超时（同步/异步共用）。"""
+    """无工具视觉模型：主配置 + 客户端超时（同步/异步共用）。
+
+    temperature 与 stream_usage 都刻意传 None（即不传这两个参数）：原实现就没有传，
+    分别走 ChatOpenAI 的默认 0.7 与 langchain 的默认用量策略。工厂若默认传 0/False，
+    读图行为会被静默改变 —— 见 U1-baseline.md #05。
+    """
     from app.chat.agent_service import _llm_config_from_ua
 
     cfg = _llm_config_from_ua(ua)
-    base_url = (cfg.get("base_url") or "").strip() or None
-    from app.utils.egress import pinned_llm_client_kwargs
-
-    return init_chat_model(
-        model=cfg["model_name"],
-        model_provider="openai",
-        api_key=cfg["api_key"],
-        base_url=base_url,
+    return LlmFactory.chat(
+        cfg,
+        temperature=None,
+        stream_usage=None,
         timeout=_caption_timeout_seconds(),
-        **pinned_llm_client_kwargs(base_url),
     )
 
 

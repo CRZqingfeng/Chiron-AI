@@ -6,8 +6,8 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
-from app.chat.memory_turns import group_turns, split_system_prefix
-from app.chat.message_codec import msg_content_to_str
+from app.core.memory_turns import group_turns, split_system_prefix
+from app.core.message_codec import msg_content_to_str
 from app.settings import settings
 
 

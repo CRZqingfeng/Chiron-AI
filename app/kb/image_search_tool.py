@@ -7,9 +7,14 @@ from typing import Literal
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from app.chat.attachment_service import attachment_object_key, classify_kind, get_attachment_row
+from app.chat.attachment_service import (
+    attachment_object_key,
+    classify_kind,
+    count_session_image_attachments,
+    get_attachment_row,
+)
 from app.core import object_storage as obs
-from app.chat.tools import (
+from app.core.turn_runtime import (
     _set_last_rag_context,
     emit_rag_step,
     is_knowledge_allowed_this_turn,
@@ -53,10 +58,11 @@ def make_search_knowledge_by_image_tool(
         if not obs.exists(attachment_object_key(row.stored_relpath)):
             return "错误：图片文件在服务器上不可读，请重新上传。"
 
-        if not try_acquire_image_kb_tool_slot(user_id, agent_id, session_id):
-            from app.chat.attachment_service import count_session_image_attachments
-
-            n = count_session_image_attachments(user_id, agent_id, session_id)
+        # 配额上限 = 本会话图片类附件的数量：一个会话只有 2 张图，就最多以图检索 2 次。
+        # 计数来自附件表（对话域），所以在这里取好再传进去——core 不做跨域数据访问。
+        max_image_calls = count_session_image_attachments(user_id, agent_id, session_id)
+        if not try_acquire_image_kb_tool_slot(max_image_calls):
+            n = max_image_calls
             if n <= 0:
                 limit_msg = (
                     "TOOL_CALL_LIMIT: 以图知识库检索需要本会话至少有一张图片附件；"

@@ -1,4 +1,10 @@
-"""Agent 工具共享状态（知识库/记忆/联网检索由各自工具模块动态绑定）。
+"""每轮 agent 运行时状态（原 `app/chat/tools.py`）。
+
+为什么在 `app/core` 而不在 `app/chat`：这份状态被三方共用——`app/chat`（工具实现）、
+`app/kb`（检索流程要 emit RAG 步骤）、`app/mcp_client`（待确认 MCP 调用）。
+放在 `app/chat` 下会让知识库反向依赖对话域，故下沉为中性基础设施。
+
+知识库/记忆/联网检索的具体工具由各自模块动态绑定，这里只管状态与配额。
 
 并发安全：全部状态挂在按请求创建的 _RequestState 上，经 ContextVar 分发。
 asyncio.create_task / asyncio.to_thread / LangChain run_in_executor 均会复制当前
@@ -188,17 +194,18 @@ def try_acquire_memory_tool_slot() -> bool:
     return True
 
 
-def try_acquire_image_kb_tool_slot(user_id: int, agent_id: int, session_id: str) -> bool:
-    """
-    以图知识库检索：每轮成功次数不超过当前会话中图片类附件数量。
-    无图片附件时返回 False。
-    """
-    from app.chat.attachment_service import count_session_image_attachments
+def try_acquire_image_kb_tool_slot(max_n: int) -> bool:
+    """以图知识库检索配额：本轮成功次数不超过 max_n，成功占用返回 True。
 
-    state = _state()
-    max_n = count_session_image_attachments(user_id, agent_id, session_id)
+    为什么要传 max_n 而不是自己查附件表：上限等于「本会话图片类附件数」，
+    那个计数在对话域的附件表里。如果这里自己去 import `app.chat.attachment_service`，
+    core 就反向依赖了 chat。计数交给调用方（`app/kb/image_search_tool`），
+    本函数只做纯粹的配额判断。
+    U8b 把图源抽象出来之后，调用方可以换成别的计数来源，这里无需改动。
+    """
     if max_n <= 0:
         return False
+    state = _state()
     if state.image_kb_calls >= max_n:
         return False
     state.image_kb_calls += 1

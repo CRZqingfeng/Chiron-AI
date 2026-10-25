@@ -7,8 +7,8 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from app.chat.memory_turns import group_turns, split_system_prefix
-from app.chat.message_codec import msg_content_to_str
+from app.core.memory_turns import group_turns, split_system_prefix
+from app.core.message_codec import msg_content_to_str
 from app.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -179,20 +179,13 @@ def _run_summarizer(old_summary: str, dropped_text: str, llm_config: dict[str, A
         dropped=dropped or "（无）",
     )
     try:
-        from langchain.chat_models import init_chat_model
         from langchain_core.messages import HumanMessage as HM
 
-        from app.utils.egress import pinned_llm_client_kwargs
+        from app.utils.llm_factory import LlmFactory
 
-        model = init_chat_model(
-            model=(llm_config.get("model_name") or "gpt-4"),
-            model_provider="openai",
-            api_key=key,
-            base_url=(llm_config.get("base_url") or "").strip() or None,
-            temperature=0,
-            stream_usage=False,
-            **pinned_llm_client_kwargs((llm_config.get("base_url") or "").strip() or None),
-        )
+        model = LlmFactory.try_chat(llm_config)
+        if model is None:
+            return None
         out = model.invoke([HM(content=prompt)])
         text = (getattr(out, "content", None) or str(out)).strip()
         if not text:
@@ -237,9 +230,9 @@ def build_compacted_model_messages(
     达阈值时用子智能体摘要被挤出窗口的轮次，写入 session metadata 后跨轮原样重放。
     给出 path_ids 时按 turn_key 前缀匹配压缩状态：共享前缀跨分支复用，分叉后各走各的摘要。
     """
-    from app.chat.memory_turns import turn_keys_of
+    from app.core.memory_turns import turn_keys_of
     from app.chat.storage import storage
-    from app.chat.tools import emit_rag_step
+    from app.core.turn_runtime import emit_rag_step
 
     # 阶段 1: 消息预处理
     # 拆分出系统前缀(不参与压缩) + 对话正文, 正文按 human→ai 成对分组为 turns

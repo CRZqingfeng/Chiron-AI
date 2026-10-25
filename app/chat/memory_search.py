@@ -8,14 +8,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 
 from app.chat.milvus_memory import get_chat_memory_milvus, memory_filter_expr
 from app.chat.memory_scope import memory_scope_for
 from app.kb.multimodal_embedding import get_multimodal_embedding_service
 from app.settings import settings
-from app.utils.egress import pinned_llm_client_kwargs
+from app.utils.llm_factory import LlmFactory
 
 logger = logging.getLogger(__name__)
 
@@ -44,15 +43,9 @@ def rewrite_memory_query(raw_query: str, llm_config: dict[str, Any]) -> str:
     if not key:
         return q
     try:
-        model = init_chat_model(
-            model=(llm_config.get("model_name") or "gpt-4"),
-            model_provider="openai",
-            api_key=key,
-            base_url=(llm_config.get("base_url") or "").strip() or None,
-            temperature=0,
-            stream_usage=False,
-            **pinned_llm_client_kwargs((llm_config.get("base_url") or "").strip() or None),
-        )
+        model = LlmFactory.try_chat(llm_config)
+        if model is None:
+            return q
         out = model.invoke([HumanMessage(content=REWRITE_PROMPT.format(query=q))])
         text = (getattr(out, "content", None) or str(out)).strip()
         return text if text else q

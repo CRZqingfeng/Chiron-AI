@@ -38,7 +38,7 @@ def check_auth_rate_limit(request: Request, *, action: str, limit: int, window_s
         raise
     except Exception as exc:
         if settings.DEBUG:
-            logger.warning("auth rate limit skipped (redis unavailable): %s", exc)
+            logger.warning("auth rate limit skipped (redis unavailable): {}", exc)
             return
-        logger.warning("auth rate limit fail-closed (redis unavailable): %s", exc)
+        logger.warning("auth rate limit fail-closed (redis unavailable): {}", exc)
         raise HTTPException(status_code=503, detail="认证服务暂时不可用") from exc

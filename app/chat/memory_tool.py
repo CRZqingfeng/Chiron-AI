@@ -6,7 +6,7 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
-from app.chat.tools import (
+from app.core.turn_runtime import (
     _set_last_rag_context,
     emit_rag_step,
     log_kb_tool_return_to_terminal,

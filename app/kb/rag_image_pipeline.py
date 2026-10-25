@@ -10,7 +10,7 @@ from typing import Any, List, Optional, TypedDict
 from langgraph.graph import END, StateGraph
 
 from app.chat.attachment_service import attachment_object_key, classify_kind, get_attachment_row
-from app.chat.tools import emit_rag_step
+from app.core.turn_runtime import emit_rag_step
 from app.core import object_storage as obs
 
 

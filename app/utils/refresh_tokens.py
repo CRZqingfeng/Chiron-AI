@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import Response
 
-from app.chat.cache import cache
+from app.core.cache import cache
 from app.settings import settings
 
 COOKIE_NAME = "chiron_refresh"

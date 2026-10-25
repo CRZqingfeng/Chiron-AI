@@ -12,8 +12,8 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 import app.chat.storage as storage_mod
-from app.chat.db_models import ChatMessage as ChatMessageRow
-from app.chat.db_models import ChatSession as ChatSessionRow
+from app.core.db_models import ChatMessage as ChatMessageRow
+from app.core.db_models import ChatSession as ChatSessionRow
 
 
 class _MemoryCache:

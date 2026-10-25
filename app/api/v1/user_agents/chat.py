@@ -10,7 +10,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
-from app.chat.agent_service import chat_with_agent_stream, chat_with_agent_sync
+from app.chat.agent_service import chat_with_agent_stream
 from app.chat.attachment_service import file_bytes_for_attachment, get_attachment_row, save_uploaded_file
 from app.chat.chat_job import (
     cancel_active_session_job,
@@ -21,7 +21,6 @@ from app.chat.chat_job import (
     request_chat_job_cancel,
     verify_job_owner,
 )
-from app.chat.preview_session import is_editor_preview_session
 from app.chat.llm_errors import (
     KIND_AUTH,
     KIND_CONNECTION,
@@ -33,7 +32,9 @@ from app.chat.llm_errors import (
     KIND_TIMEOUT,
     classify_llm_error,
 )
+from app.chat.preview_session import is_editor_preview_session
 from app.chat.storage import storage
+from app.chat.turn_events import purge_for_session
 from app.controllers.user_agent import user_agent_controller
 from app.controllers.user_agent_recent import list_recent_agents_public, touch_recent_agent
 from app.models.user_agent import UserAgent
@@ -45,7 +46,6 @@ from app.schemas.agent_chat import (
     ChatAttachmentUploadResponse,
     ChatJobCreateResponse,
     ChatRequest,
-    ChatResponse,
     MessageInfo,
     McpConfirmRequest,
     SessionDeleteResponse,
@@ -185,41 +185,6 @@ def _upstream_http_exception(exc: Exception) -> HTTPException | None:
     logger.warning("upstream model service error kind=%s: %s", info.kind, info.detail[:1000])
     return HTTPException(status_code=status, detail=info.user_message)
 
-@router.post("/chat", summary="智能体对话（非流式）", tags=["智能体模块"])
-async def chat_sync_endpoint(request: ChatRequest, current_user: User = Depends(AuthControl.is_authed)):
-    user_id = current_user.id
-    _check_chat_rate_limit(user_id)
-    ua = await user_agent_controller.get_accessible(request.agent_id, user_id)
-    if not ua:
-        raise HTTPException(status_code=404, detail="智能体不存在或无权限访问")
-    session_id = (request.session_id or "default_session").strip() or "default_session"
-    try:
-        # 放到线程池执行：chat_with_agent_sync 内部会用 asyncio.run 加载 MCP 工具，
-        # 需运行在无活动事件循环的线程中；同时避免同步 LLM 调用阻塞事件循环。
-        resp = await asyncio.to_thread(
-            chat_with_agent_sync,
-            ua,
-            request.message.strip(),
-            user_id,
-            request.agent_id,
-            session_id,
-            use_knowledge_retrieval=request.use_knowledge_retrieval,
-            use_web_search=request.use_web_search,
-            attachment_ids=request.attachment_ids or None,
-            mcp_approved_pending_id=request.mcp_approved_pending_id,
-        )
-        if not is_editor_preview_session(session_id):
-            await touch_recent_agent(user_id, request.agent_id)
-        return Success(data=ChatResponse(**resp).model_dump())
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        mapped = _upstream_http_exception(e)
-        if mapped:
-            raise mapped from e
-        logger.exception("chat_sync_endpoint failed")
-        raise HTTPException(status_code=500, detail="对话生成失败，请稍后重试") from e
-
 
 @router.post("/chat/stream", summary="智能体对话（SSE 流式）", tags=["智能体模块"])
 async def chat_stream_endpoint(request: ChatRequest, current_user: User = Depends(AuthControl.is_authed)):
@@ -310,6 +275,8 @@ async def create_chat_job_endpoint(request: ChatRequest, current_user: User = De
         regenerate=request.regenerate,
         target_message_id=request.target_message_id,
         mcp_approved_pending_id=request.mcp_approved_pending_id,
+        resume_thread_id=request.resume_thread_id,
+        resume_decision=request.resume_decision,
     )
     if is_dup:
         # 如果已有进行中的生成任务，则返回409错误
@@ -584,6 +551,7 @@ def _to_message_infos(raw: list[dict]) -> list[MessageInfo]:
             sources=m.get("sources"),
             thinking_text=m.get("thinking_text"),
             thinking_items=m.get("thinking_items"),
+            approval_pending=m.get("approval_pending"),
             version_index=int(m.get("version_index") or 1),
             version_count=int(m.get("version_count") or 1),
             sibling_ids=m.get("sibling_ids"),
@@ -678,6 +646,9 @@ async def delete_chat_session(
     deleted = storage.delete_session(user_id, agent_id, session_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="会话不存在")
+    # 同步清掉该会话的快照记录：定时清理只兜「过期」，兜不住「用户主动删除」，
+    # 否则被删的会话会在 mg_chat_turn_events 里留下生成内容全文。
+    await asyncio.to_thread(purge_for_session, user_id, agent_id, session_id)
     # 返回会话删除响应
     body = SessionDeleteResponse(session_id=session_id, message="已删除会话").model_dump()
     return Success(data=body)

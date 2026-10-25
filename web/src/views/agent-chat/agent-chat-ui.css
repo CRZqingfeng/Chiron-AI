@@ -425,6 +425,85 @@ html.dark .agent-chat-thinking-step-line {
   line-height: 1;
 }
 
+/* ---- U9a 规划清单：与 step 行同层级，但用块状样式承载多条待办 ---- */
+.agent-chat-todo-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #475569;
+}
+
+html.dark .agent-chat-todo-block {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.agent-chat-todo-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px 10px;
+}
+
+.agent-chat-todo-progress {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+}
+
+.agent-chat-todo-list {
+  margin: 0;
+  padding: 0 0 0 4px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.agent-chat-todo-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.agent-chat-todo-mark {
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+  font-size: 11px;
+}
+
+.agent-chat-todo-item--pending .agent-chat-todo-mark {
+  color: #94a3b8;
+}
+
+.agent-chat-todo-item--doing .agent-chat-todo-mark {
+  color: #f59e0b;
+}
+
+.agent-chat-todo-item--done .agent-chat-todo-mark {
+  color: #10b981;
+}
+
+/* 已完成的条目不抢注意力：划一道线，颜色压淡 */
+.agent-chat-todo-item--done .agent-chat-todo-text {
+  color: #94a3b8;
+  text-decoration: line-through;
+}
+
+html.dark .agent-chat-todo-item--done .agent-chat-todo-text {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.agent-chat-todo-item--doing .agent-chat-todo-text {
+  color: #334155;
+  font-weight: 500;
+}
+
+html.dark .agent-chat-todo-item--doing .agent-chat-todo-text {
+  color: rgba(255, 255, 255, 0.9);
+}
+
 .agent-chat-thinking-step-label {
   font-weight: 500;
   color: #334155;

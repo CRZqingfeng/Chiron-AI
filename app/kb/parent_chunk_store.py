@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, List
 
-from app.chat.cache import cache
-from app.chat.database import SessionLocal
-from app.chat.db_models import KbParentChunk
+from app.core.cache import cache
+from app.core.db import SessionLocal
+from app.kb.db_models import KbParentChunk
 
 
 class ParentChunkStore:

@@ -11,9 +11,9 @@ from typing import Any
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from app.chat.memory_scope import memory_scope_for
-from app.chat.memory_turns import group_turn_pairs, split_system_prefix
+from app.core.memory_turns import group_turn_pairs, split_system_prefix
 from app.chat.milvus_memory import get_chat_memory_milvus
-from app.chat.message_codec import msg_content_to_str
+from app.core.message_codec import msg_content_to_str
 from app.chat.storage import storage
 from app.kb.multimodal_embedding import get_multimodal_embedding_service
 from app.settings import settings
