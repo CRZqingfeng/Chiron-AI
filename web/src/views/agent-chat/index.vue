@@ -66,12 +66,6 @@
             <div class="agent-chat-toolbar">
               <div class="agent-chat-toolbar-fade"></div>
               <div class="agent-chat-toolbar-inner">
-                <n-button size="small" round quaternary @click="showMemoryPanel = true">
-                  <template #icon>
-                    <TheIcon icon="mdi:brain" :size="18" />
-                  </template>
-                  {{ $t('views.agents.chat_memory_button') }}
-                </n-button>
                 <n-button size="small" round quaternary @click="restartChat">
                   <template #icon>
                     <TheIcon icon="mdi:plus-circle-outline" :size="18" />
@@ -197,8 +191,6 @@
         </template>
       </n-spin>
     </div>
-
-    <AgentMemoryPanel v-model:show="showMemoryPanel" :agent-id="chatAgentId" />
   </AppPage>
 </template>
 
@@ -211,7 +203,6 @@ import { NAvatar, NButton, NInput, NSpin, NSwitch, NTooltip, NUpload } from 'nai
 import AppPage from '@/components/page/AppPage.vue'
 import TheIcon from '@/components/icon/TheIcon.vue'
 import ChatMessageList from './ChatMessageList.vue'
-import AgentMemoryPanel from './AgentMemoryPanel.vue'
 import { useChatStickToBottom } from './useChatStickToBottom.js'
 import { useChatSession } from './useChatSession.js'
 import { useChatComposer, MAX_CHAT_ATTACHMENTS, chatAttachmentIcon } from './useChatComposer.js'
@@ -238,8 +229,6 @@ const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 const chatAgentId = computed(() => Number(route.params.agentId))
-// 「记忆」面板：打开才拉数据（记忆是低频数据，不必跟着对话页一直查）
-const showMemoryPanel = ref(false)
 const agentChatHeaderStore = useAgentChatHeaderStore()
 const agentSidebarStore = useAgentSidebarStore()
 

@@ -73,6 +73,22 @@
               $t('views.agents.chat_popover_kb_short')
             }}</span>
           </button>
+          <!-- 记忆与「中心/编辑/知识库」并列：都属于「这个智能体本身」的入口。
+               不限定 isOwner —— 记忆作用域是「用户 × 智能体」，别人共享的智能体
+               里也有各自的一份记忆。 -->
+          <button
+            type="button"
+            class="agent-chat-popover-action"
+            :disabled="!headerStore.agentId"
+            @click="openMemory"
+          >
+            <span class="agent-chat-popover-action-circle">
+              <TheIcon icon="mdi:brain" :size="22" />
+            </span>
+            <span class="agent-chat-popover-action-label">{{
+              $t('views.agents.chat_popover_memory_short')
+            }}</span>
+          </button>
         </div>
 
         <div class="agent-chat-popover-divider" />
@@ -123,6 +139,8 @@
         </div>
       </div>
     </n-popover>
+
+    <AgentMemoryPanel v-model:show="memoryShow" :agent-id="headerStore.agentId || 0" />
   </div>
 </template>
 
@@ -135,6 +153,7 @@ import TheIcon from '@/components/icon/TheIcon.vue'
 import api from '@/api'
 import { useAgentChatHeaderStore } from '@/store'
 import { DEFAULT_AVATAR } from '@/views/agents/composables/agentFormCommon.js'
+import AgentMemoryPanel from '@/views/agent-chat/AgentMemoryPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -142,6 +161,7 @@ const { t } = useI18n()
 const headerStore = useAgentChatHeaderStore()
 
 const popoverShow = ref(false)
+const memoryShow = ref(false)
 const historyLoading = ref(false)
 const historySessions = ref([])
 
@@ -236,6 +256,13 @@ function goKnowledgeBase() {
   if (!headerStore.agentId) return
   popoverShow.value = false
   router.push({ name: 'AgentKnowledgeBase', params: { agentId: String(headerStore.agentId) } })
+}
+
+function openMemory() {
+  if (!headerStore.agentId) return
+  // 先关 popover：面板是弹层，两层叠着会互相抢焦点
+  popoverShow.value = false
+  memoryShow.value = true
 }
 </script>
 
@@ -349,7 +376,9 @@ html.dark .agent-chat-popover-creator {
 
 .agent-chat-popover-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* 列数随按钮数量变化（共享用户看不到"编辑/知识库"，但能看到"记忆"），
+     固定 3 列会在 4 个按钮时把第 4 个挤到第二行单挂一个 */
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
   gap: 10px 6px;
   margin-top: 22px;
 }
