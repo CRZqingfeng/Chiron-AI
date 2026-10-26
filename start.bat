@@ -35,7 +35,7 @@ echo          Check the "Chiron-AI Backend" window for errors, then refresh the 
 :done
 echo.
 echo Done!
-echo   Frontend : http://localhost:3100
+echo   Frontend : http://localhost:3200
 echo   API docs : http://localhost:9999/docs
 echo   First login: admin / see .env INITIAL_ADMIN_PASSWORD
 echo.
