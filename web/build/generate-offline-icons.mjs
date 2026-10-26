@@ -82,7 +82,10 @@ function extractSubset(data, wantedNames) {
     return { icons: [parent], aliases: chain }
   }
   const missing = []
-  for (const name of wantedNames) {
+  // 必须排序：JSON.stringify 保留键的插入顺序，而插入顺序来自「扫描 src 的发现顺序」。
+  // readdir 顺序在不同文件系统/系统上不保证稳定，不排序会让这个 1MB 生成物每次
+  // dev 启动都产生无关 diff（实测同一份源码能生成字节数相同但顺序不同的输出）。
+  for (const name of [...wantedNames].sort()) {
     const r = resolve(name)
     if (!r) {
       missing.push(name)
@@ -116,16 +119,28 @@ function main() {
   }
 
   const collections = []
+  const skippedPrefixes = []
   for (const [prefix, wanted] of [...byPrefix.entries()].sort()) {
     const file = path.join(ICONIFY_JSON_DIR, `${prefix}.json`)
     if (!fs.existsSync(file)) {
-      console.warn(`[offline-icons] @iconify/json 中不存在集合: ${prefix}`)
+      // 正则 `prefix:name` 会误伤源码里其它「带冒号的短字符串」：
+      //   virtual:svg-icons-register（Vite 虚拟模块）、update:value（Vue 事件名）、
+      //   chiron-ai:xxx（localStorage key）、dark:bg-dark（UnoCSS 暗色变体类名）……
+      // 这类清单永远漏，且逐条告警会把真正的「图标名拼错」淹没。所以：
+      // 前缀不存在于 @iconify/json 就跳过，最后汇总成一行打印；单个图标名写错
+      // 仍由 extractSubset 的「缺少图标」告警兜住（那才是高频错误）。
+      skippedPrefixes.push(prefix)
       continue
     }
     const data = JSON.parse(fs.readFileSync(file, 'utf-8'))
     collections.push(extractSubset(data, wanted))
   }
 
+  if (skippedPrefixes.length) {
+    console.log(
+      `[offline-icons] 跳过非图标命名空间（源码里的其它冒号串）: ${skippedPrefixes.sort().join(', ')}`
+    )
+  }
   const total = collections.reduce((n, c) => n + Object.keys(c.icons).length, 0)
   const body = `// 本文件由 build/generate-offline-icons.mjs 自动生成，请勿手改
 export default ${JSON.stringify(collections)}
