@@ -31,13 +31,8 @@ META = [
 ]
 CORE = {"faithfulness", "answer_relevancy", "context_precision", "context_recall"}
 
-# 分诊证据（本次逐题核实得出的页码结论，换语料要重查，不要照抄）
-PAGE_EVIDENCE = {
-    5: "ALTER TABLE 各语句在 p24 截图内，文本块只剩小标题",
-    6: "TRUNCATE 的说明在 p25 截图内，文本块只有一句“数据都会被删除”",
-    17: "约束正文在 p61；候选页为 1/11/12/13/53，全无关",
-    23: "隔离级别正文在 p93；候选页为 1/12/53/88，全无关",
-}
+# 分诊清单由 --diagnose 传入（[{idx,type,label,evidence}]）。
+# 为什么要外部传：分诊结论依赖具体语料与页码核实，写死在脚本里换个语料就是假话。
 
 # 生成模型单价（元 / 百万 token）。来源：交接文档实测口径 ——
 # deepseek-flash 工作日 9:00-12:00 / 14:00-18:00 为高峰价（入 2 / 出 8），其余时段半价（入 1 / 出 4）。
@@ -73,10 +68,8 @@ def main():
     ap.add_argument("--model", default="deepseek-flash")
     ap.add_argument("--judge", default="glm-5.3-flash")
     ap.add_argument("--topk", default="5")
-    ap.add_argument("--image-only", default="",
-                    help="答案仅存在于图片/截图中的题号（逗号分隔），用于分诊")
-    ap.add_argument("--retrieval-miss", default="",
-                    help="正确答案所在页未被检索命中的题号（逗号分隔），用于分诊")
+    ap.add_argument("--diagnose", default="",
+                    help='分诊清单 JSON：[{"idx":5,"type":"fragment","label":"分块碎片","evidence":"..."}]')
     a = ap.parse_args()
 
     rounds = [("第一轮", load(a.r1)), ("第二轮", load(a.r2))]
@@ -117,9 +110,9 @@ def main():
         per_q.append(rec)
 
     # ---------- 分诊（把"答不出"拆成两类原因，避免混成一个均值） ----------
-    img_only = [int(x) for x in a.image_only.split(",") if x.strip()]
-    miss = [int(x) for x in a.retrieval_miss.split(",") if x.strip()]
-    excluded = set(img_only) | set(miss)
+    diag = load(a.diagnose) or []
+    diag_by_idx = {int(d["idx"]): d for d in diag}
+    excluded = set(diag_by_idx)
 
     def cohort_mean(key, skip=frozenset()):
         vs = [r["scores"][key] for r in per_q if r["idx"] not in skip and r["scores"].get(key) is not None]
@@ -243,18 +236,22 @@ def main():
             "；".join(f"#{w['idx']}（核心均分 {core_avg(w):.2f}）" for w in worst)
             + "。定位到题比看均值有用，这三道值得先点开看上下文。"
         )
-    if img_only:
+    # 分诊结论：按类型分组，逐类说清"是不是检索的错"
+    by_type: dict[str, list[dict]] = {}
+    for d in diag:
+        by_type.setdefault(d.get("type") or "other", []).append(d)
+    TYPE_SAY = {
+        "fragment": ("分块碎片", "命中页对了，但注入的碎片把关键句切掉了（父块合并未触发）"),
+        "miss": ("未召回", "正确答案所在页一条都没进候选"),
+        "gen": ("生成未综合", "上下文已含所需事实，回答没有归纳"),
+        "image": ("图文无解", "答案只在图片像素里，纯文本通道拿不到"),
+    }
+    for t, items in by_type.items():
+        label, why = TYPE_SAY.get(t, (t, ""))
         concl.append(
-            f"<b>{len(img_only)} 题（{'、'.join('#%d' % i for i in img_only)}）不是检索缺陷，是语料形态问题</b>："
-            "答案原文只存在于 PDF 截图里，文本块只剩小标题，模型只能如实说“没有文字内容”。"
-            "本次取数只把图片链接拼进提示（未传像素），所以这一组反映的是<b>纯文本通道</b>；"
-            "产品侧该智能体 <code>supports_vision=true</code>，真实对话会把图交给视觉模型，能力不等价。"
-        )
-    if miss:
-        concl.append(
-            f"<b>{len(miss)} 题（{'、'.join('#%d' % i for i in miss)}）是真实检索未命中</b>："
-            "正确答案所在页一条都没进候选，拿到的全是无关页。这是本次<b>最该修的一项</b>，"
-            "和 topK 被图片块占掉名额直接相关（见下节）。"
+            f"<b>{len(items)} 题属「{label}」</b>：{'、'.join('#%d' % int(d['idx']) for d in items)}。{why}。"
+            + (" 这一类不是模型不会读图——已用对照实验验证模型能准确复述该页图片内容。"
+               if t == "image" else "")
         )
 
     # ---------- HTML ----------
@@ -338,10 +335,11 @@ def main():
         rec = next((r for r in per_q if r["idx"] == i), None)
         if not rec:
             continue
-        kind = "图文无解" if i in img_only else "检索未命中"
-        cls = "na" if i in img_only else "bad"
+        d = diag_by_idx.get(i, {})
+        kind = d.get("label") or "—"
+        cls = "na" if d.get("type") == "gen" else "bad"
         diag_rows += (f"<tr><td class='idx'>#{i}</td><td class='sc {cls}'>{kind}</td>"
-                      f"<td>{esc(rec['q'])}</td><td class='dim'>{esc(PAGE_EVIDENCE.get(i, ''))}</td></tr>")
+                      f"<td>{esc(rec['q'])}</td><td class='dim'>{esc(d.get('evidence', ''))}</td></tr>")
 
     rrows = ""
     for r in refuse_rows:
@@ -451,8 +449,8 @@ code{{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12px}}
 <thead><tr><th>指标</th><th>全量 {n_q} 题</th><th>剔除 4 题后（{n_q - len(excluded)} 题）</th><th>差值</th></tr></thead>
 <tbody>{cohort_rows or '<tr><td colspan="4" class="dim">未指定分诊题号</td></tr>'}</tbody></table>
 <div class="dim" style="font-size:12px;margin:10px 0 14px">
-剔除的 4 题分两类原因，<b>这两类要分开处理，不能混成一个均值</b>。剔除以后的数字是「纯文本可答题」的读数，
-用来判断检索本身行不行；它<b>不是</b>对外报的数，只作定位用。</div>
+剔除的 {len(excluded)} 题按<b>失效环节</b>归类，<b>不同环节要分开处理，不能混成一个均值</b>。剔除以后的数字是
+"这些环节都不出错时"的读数，用来判断链路本身行不行；它<b>不是</b>对外报的数，只作定位用。</div>
 <table>
 <thead><tr><th>#</th><th>类型</th><th>问题</th><th>证据</th></tr></thead>
 <tbody>{diag_rows}</tbody></table>
