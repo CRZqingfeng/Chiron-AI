@@ -38,4 +38,7 @@ migrations/
 
 volumes/
 
+# RAGAS 评测的临时产物（采集数据、判官分、判官密钥），不入库
+.tmp/
+
 .zcode/
