@@ -68,6 +68,9 @@ def main():
     ap.add_argument("--model", default="deepseek-flash")
     ap.add_argument("--judge", default="glm-5.3-flash")
     ap.add_argument("--topk", default="5")
+    ap.add_argument("--baseline1", default="", help="改前第一轮判分结果（用于前后对比）")
+    ap.add_argument("--baseline2", default="", help="改前第二轮判分结果")
+    ap.add_argument("--change-note", default="", help="这次改了什么，显示在对比块标题里")
     ap.add_argument("--diagnose", default="",
                     help='分诊清单 JSON：[{"idx":5,"type":"fragment","label":"分块碎片","evidence":"..."}]')
     a = ap.parse_args()
@@ -133,8 +136,9 @@ def main():
 
     c1 = tokens(a.collect1)
     c2 = tokens(a.collect2)
-    tin, tout = c1[0] + c2[0], c1[1] + c2[1]
-    n_gen = c1[2] + c2[2]
+    cg = tokens(a.gate)  # 拒答段复测也是真实的生成调用，不计进去成本会偏低
+    tin, tout = c1[0] + c2[0] + cg[0], c1[1] + c2[1] + cg[1]
+    n_gen = c1[2] + c2[2] + cg[2]
 
     # 两轮检索是否逐题一致（判断"两轮差"到底测到了什么）
     raw1, raw2 = load(a.collect1) or [], load(a.collect2) or []
@@ -253,6 +257,43 @@ def main():
             + (" 这一类不是模型不会读图——已用对照实验验证模型能准确复述该页图片内容。"
                if t == "image" else "")
         )
+
+    # ---------- 改前 / 改后 对比 ----------
+    base_rounds = [(n, load(p)) for n, p in (("改前1", a.baseline1), ("改前2", a.baseline2))]
+    base_rounds = [(n, d) for n, d in base_rounds if d]
+    cmp_rows = ""
+    if base_rounds:
+        for key, label, thr, direction, _ in META:
+            bvals = [r["scores"][key] for _n, rows in base_rounds for r in rows
+                     if r["scores"].get(key) is not None]
+            cvals = [r["scores"][key] for _n, rows in rounds for r in rows
+                     if r["scores"].get(key) is not None]
+            if not bvals or not cvals:
+                continue
+            bm, cm = st.mean(bvals), st.mean(cvals)
+            d = cm - bm
+            # 方向规范化：噪声类指标"越低越好"，涨了算退步
+            good = (d > 0) if direction != "low" else (d < 0)
+            sig = abs(d) > 0.03
+            cls = "ok" if (good and sig) else ("no" if (not good and sig) else "")
+            mark = ("↑ 改善" if good else "↓ 变差") if sig else "≈ 持平（<0.03）"
+            cmp_rows += (f"<tr><td>{esc(label)}</td><td class='mono'>{bm:.3f}</td>"
+                         f"<td class='mono'>{cm:.3f}</td>"
+                         f"<td class='mono {cls}'>{d:+.3f}</td>"
+                         f"<td class='{cls}'>{mark}</td></tr>")
+    before_after = ""
+    if cmp_rows:
+        note = esc(a.change_note) or "本次改动"
+        before_after = f"""
+<h2>三、改前 vs 改后（{note}）</h2>
+<div class="card"><table>
+<thead><tr><th>指标</th><th>改前</th><th>改后</th><th>变化</th><th>判读</th></tr></thead>
+<tbody>{cmp_rows}</tbody></table>
+<div class="dim" style="font-size:12px;margin-top:10px">
+变化绝对值 ≤0.03 视为持平——这是本套评测实测出的噪声地板（两轮差本身就有 0.03~0.05），
+小于它的变化不该当成"改好了"或"改坏了"。噪声敏感度越低越好，已按方向折算。
+</div></div>
+"""
 
     # ---------- HTML ----------
     bar_rows = []
@@ -443,7 +484,7 @@ code{{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12px}}
 <div class="dim" style="font-size:12px;margin-top:10px">竖线 = 目标值；圆点 = 各轮均值（{len(rounds)} 轮）。灰色条为趋势项，不设门槛。</div>
 </div>
 
-<h2>三、分诊：把"答不出"拆成两类原因</h2>
+{before_after}<h2>四、分诊：把"答不出"拆成两类原因</h2>
 <div class="card">
 <table>
 <thead><tr><th>指标</th><th>全量 {n_q} 题</th><th>剔除 4 题后（{n_q - len(excluded)} 题）</th><th>差值</th></tr></thead>
@@ -456,7 +497,7 @@ code{{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12px}}
 <tbody>{diag_rows}</tbody></table>
 </div>
 
-<h2>四、两轮一致性</h2>
+<h2>五、两轮一致性</h2>
 <div class="card"><table>
 <thead><tr><th>指标</th>{''.join(f'<th>{esc(n)}</th>' for n, _ in rounds)}<th>两轮差</th><th>达标次数</th></tr></thead>
 <tbody>{round_rows}</tbody></table>
@@ -468,12 +509,12 @@ code{{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12px}}
 今后分数变化要明显大于它，才算真的变了。</div>
 </div>
 
-<h2>五、逐题明细（点行展开）</h2>
+<h2>六、逐题明细（点行展开）</h2>
 <div class="card" style="padding:6px 10px"><table>
 <thead><tr><th>#</th><th>问题</th>{''.join(f'<th>{esc(l)}</th>' for _k, l, _t, _d, _s in META)}<th></th></tr></thead>
 <tbody>{qrows}</tbody></table></div>
 
-<h2>六、应拒答题（单独统计，不进上面均值）</h2>
+<h2>七、应拒答题（单独统计，不进上面均值）</h2>
 <div class="card">{rrows if rrows else '<div class="dim">本次未跑拒答题</div>'}
 <div class="dim" style="font-size:12px;margin-top:8px">
 判定规则：回答中出现「知识库中没有相关资料 / 无法基于检索结果回答」即算如实拒答。
@@ -481,7 +522,7 @@ code{{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12px}}
 {f'<div style="margin-top:12px;padding:10px 12px;background:#f0f7ff;border:1px solid #d6e4ff;border-radius:8px;font-size:13px"><b>门控复测</b>：另用完整链路（<code>rag_llm=on</code>，含逐块打分与二次门控）跑同一批题，系统自身的 <code>no_answer</code> 判定触发 <b>{gate_hit}/{len(gate_rows)}</b>，单题耗时 7~11 秒。也就是说门控机制本身有效——上面这些“如实拒答”不是模型临场发挥，而是两条路都能兜住。</div>' if gate_rows else ''}
 </div>
 
-<h2>七、成本</h2>
+<h2>八、成本</h2>
 <div class="card">
 <div class="cost">
   <div class="cbox"><div class="n">¥ {cost_gen:.3f}</div><div class="t">回答生成（{n_gen} 次）<br>入 {tin:,} / 出 {tout:,} token</div></div>
