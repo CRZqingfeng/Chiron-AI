@@ -1,0 +1,215 @@
+{
+  "meta": {
+    "name": "mysql-basic-v1",
+    "kb_scope": "u1_a2",
+    "corpus": ["MySQL-基础篇.pdf"],
+    "judge": "glm-5.3-flash",
+    "note": "A 段进 RAGAS 六指标；B 段（应拒答）单独统计拒答率，不参与均值。",
+    "author": "draft by assistant, pending user review",
+    "created": "2026-11-06",
+    "coverage": "1 概念 / 2 DDL·DML·DQL·DCL / 3 函数 / 4 约束 / 5 多表查询 / 6 事务"
+  },
+  "questions": [
+    {
+      "idx": 1,
+      "part": "A",
+      "section": "1.1 数据库相关概念",
+      "q": "MySQL 是关系型数据库，它的数据模型结构是怎样的？客户端、DBMS、数据库、表之间是什么关系？",
+      "reference": "MySQL 基于二维表存储数据。客户端先连接数据库管理系统 DBMS，再由 DBMS 操作数据库；一个数据库下可以有多张表，数据存放在表中。用表存储数据格式统一、便于维护，并且统一用 SQL 语言操作，标准统一、使用方便。"
+    },
+    {
+      "idx": 2,
+      "part": "A",
+      "section": "2.3.2.2 表操作 - 数据类型",
+      "q": "MySQL 中 char 和 varchar 有什么区别？分别适合用在什么场景？",
+      "reference": "两者都用于存储字符串且都需要指定长度。CHAR 是定长字符串，指定长度多长就占用多少个字符，与字段值实际长度无关，范围 0-255 字节；VARCHAR 是变长字符串，指定的长度是最大占用长度，范围 0-65535 字节。相对来说 CHAR 的性能会更高一些。选型上长度固定的用 CHAR，如性别 gender char(1)、手机号 phone char(11)；长度不固定的用 VARCHAR，如用户名 username varchar(50)。"
+    },
+    {
+      "idx": 3,
+      "part": "A",
+      "section": "2.3.2.2 表操作 - 数据类型",
+      "q": "MySQL 的整数类型有哪些？tinyint、int 各占几个字节、取值范围是多少？怎么声明无符号整数？",
+      "reference": "整数类型包括 TINYINT（1 字节）、SMALLINT（2 字节）、MEDIUMINT（3 字节）、INT 或 INTEGER（4 字节）、BIGINT（8 字节）。TINYINT 有符号范围 -128 至 127，无符号范围 0 至 255；INT 有符号范围 -2147483648 至 2147483647。整数类型默认有符号，在类型后面加 UNSIGNED 声明为无符号。"
+    },
+    {
+      "idx": 4,
+      "part": "A",
+      "section": "2.3.2.2 表操作 - 数据类型",
+      "q": "DATETIME 和 TIMESTAMP 有什么区别？各自占几个字节、取值范围是什么？",
+      "reference": "两者都用来存储日期加时间，格式为 YYYY-MM-DD HH:MM:SS。DATETIME 占 8 个字节，范围 1000-01-01 00:00:00 至 9999-12-31 23:59:59；TIMESTAMP 占 4 个字节，范围 1970-01-01 00:00:01 至 2038-01-19 03:14:07。"
+    },
+    {
+      "idx": 5,
+      "part": "A",
+      "section": "2.3.2.4 表操作 - 修改",
+      "q": "在 MySQL 中给已有表添加字段、修改字段类型、修改字段名、删除字段、修改表名，分别用哪些语句？",
+      "reference": "添加字段：ALTER TABLE 表名 ADD 字段名 类型(长度) [COMMENT 注释] [约束]；修改字段类型：ALTER TABLE 表名 MODIFY 字段名 新数据类型(长度)；修改字段名和字段类型：ALTER TABLE 表名 CHANGE 旧字段名 新字段名 类型(长度) [COMMENT 注释] [约束]；删除字段：ALTER TABLE 表名 DROP 字段名；修改表名：ALTER TABLE 表名 RENAME TO 新表名。"
+    },
+    {
+      "idx": 6,
+      "part": "A",
+      "section": "2.3.2.5 表操作 - 删除",
+      "q": "DROP TABLE 和 TRUNCATE TABLE 有什么区别？",
+      "reference": "DROP TABLE 表名 删除整张表，表结构和数据一起删除；TRUNCATE TABLE 表名 删除指定表并重新创建该表，相当于只清空表中全部数据、保留表结构。注意删除表时表中的全部数据也会被删除。"
+    },
+    {
+      "idx": 7,
+      "part": "A",
+      "section": "2.5.1 添加数据",
+      "q": "MySQL 中 INSERT 语句有哪几种写法？批量插入怎么写？",
+      "reference": "给全部字段赋值：INSERT INTO 表名 VALUES (值1, 值2, ...)，值的顺序与表结构字段顺序一致；给指定字段赋值：INSERT INTO 表名 (字段1, 字段2, ...) VALUES (值1, 值2, ...)；批量插入：INSERT INTO 表名 VALUES (...), (...), (...)，一次插入多条记录。"
+    },
+    {
+      "idx": 8,
+      "part": "A",
+      "section": "2.5.2 修改数据 / 2.5.3 删除数据",
+      "q": "UPDATE 和 DELETE 语句的语法是什么？如果不带 WHERE 条件会发生什么？",
+      "reference": "UPDATE 表名 SET 字段1 = 值1, 字段2 = 值2 [WHERE 条件]；DELETE FROM 表名 [WHERE 条件]。修改和删除语句的条件可以有也可以没有，如果没有条件，则会修改或删除整张表的所有数据。"
+    },
+    {
+      "idx": 9,
+      "part": "A",
+      "section": "2.6.3 条件查询",
+      "q": "DQL 条件查询中 BETWEEN AND、IN、LIKE 分别怎么用？BETWEEN AND 等价于什么写法？",
+      "reference": "BETWEEN 最小值 AND 最大值 表示在某个范围之内，包含最小值和最大值，等价于 >= 最小值 AND <= 最大值；IN (值1, 值2, ...) 表示在 in 之后的列表中选择，多选一，等价于多个 OR 连接；LIKE 用于模糊匹配，下划线 _ 匹配单个任意字符，百分号 % 匹配任意个字符。"
+    },
+    {
+      "idx": 10,
+      "part": "A",
+      "section": "2.6.4 聚合函数",
+      "q": "MySQL 有哪些聚合函数？count(*) 和 count(字段名) 有什么区别？null 值参与聚合运算吗？",
+      "reference": "常见聚合函数有 count 统计数量、max 求最大值、min 求最小值、avg 求平均值、sum 求和。null 值不参与所有聚合函数的运算，所以 count(字段名) 只统计该字段非 null 的行数，而 count(*) 统计整张表的行数。"
+    },
+    {
+      "idx": 11,
+      "part": "A",
+      "section": "2.6.5 分组查询",
+      "q": "分组查询中 WHERE 和 HAVING 有什么区别？执行顺序是怎样的？",
+      "reference": "WHERE 是分组之前进行过滤，不满足 WHERE 条件的不参与分组，而且 WHERE 不能对聚合函数进行判断；HAVING 是分组之后对结果进行过滤，可以对聚合函数进行判断。执行顺序是 WHERE 先于聚合函数，聚合函数先于 HAVING。"
+    },
+    {
+      "idx": 12,
+      "part": "A",
+      "section": "2.6.7 分页查询",
+      "q": "LIMIT 分页查询的语法是什么？起始索引怎么计算？查询第一页时能省略吗？",
+      "reference": "语法是 LIMIT 起始索引, 查询记录数。起始索引从 0 开始，计算公式为 起始索引 = (查询页码 - 1) * 每页显示的记录数。如果查询的是第一页数据，起始索引可以省略，直接写 LIMIT 查询记录数。"
+    },
+    {
+      "idx": 13,
+      "part": "A",
+      "section": "2.6.9 执行顺序",
+      "q": "一条完整的 DQL 语句（含 where、group by、having、order by、limit）实际执行顺序是什么？",
+      "reference": "编写顺序是 select 字段列表 from 表名列表 where 条件列表 group by 分组字段列表 having 分组后条件列表 order by 排序字段列表 limit 分页参数；实际执行顺序是 from、where、group by、having、select、order by、limit。"
+    },
+    {
+      "idx": 14,
+      "part": "A",
+      "section": "2.7 DCL",
+      "q": "在 MySQL 中如何创建用户、授予权限和撤销权限？分别用什么语句？",
+      "reference": "创建用户：CREATE USER '用户名'@'主机名' IDENTIFIED BY '密码'；删除用户：DROP USER '用户名'@'主机名'；修改用户密码：ALTER USER '用户名'@'主机名' IDENTIFIED WITH mysql_native_password BY '新密码'；授予权限：GRANT 权限列表 ON 数据库名.表名 TO '用户名'@'主机名'；撤销权限：REVOKE 权限列表 ON 数据库名.表名 FROM '用户名'@'主机名'。"
+    },
+    {
+      "idx": 15,
+      "part": "A",
+      "section": "3.1 字符串函数",
+      "q": "MySQL 常用的字符串函数有哪些？concat、lpad、trim、substring 各自的作用是什么？",
+      "reference": "常用字符串函数有 concat(s1, s2, ...) 字符串拼接；lower(str) 全部转小写；upper(str) 全部转大写；lpad(str, n, pad) 左填充，用 pad 把 str 填充到 n 个字符长度；rpad 右填充；trim(str) 去掉字符串首尾空格；substring(str, start, len) 截取从 start 开始的 len 个字符，索引从 1 开始。"
+    },
+    {
+      "idx": 16,
+      "part": "A",
+      "section": "3.4 流程函数",
+      "q": "MySQL 的流程函数有哪些？IFNULL、IF、CASE WHEN 分别怎么用？",
+      "reference": "IF(value, t, f) 相当于三元运算符，value 为 true 时返回 t，否则返回 f；IFNULL(value1, value2) 如果 value1 不为 null 返回 value1，否则返回 value2；CASE WHEN [条件1] THEN [结果1] ... ELSE [默认结果] END 用于多条件判断；CASE [表达式] WHEN [值1] THEN [结果1] ... ELSE [默认结果] END 用于等值匹配，可以有多组 when。"
+    },
+    {
+      "idx": 17,
+      "part": "A",
+      "section": "4.1 约束概述",
+      "q": "MySQL 支持哪些约束？各自的作用是什么？",
+      "reference": "非空约束 NOT NULL 限制该字段的数据不能为 null；唯一约束 UNIQUE 保证该字段的所有数据都是唯一、不重复的；主键约束 PRIMARY KEY 是唯一约束加非空约束，一张表只能有一个主键；默认约束 DEFAULT 在保存数据时如果未指定该字段的值就采用默认值；检查约束 CHECK 保证字段值满足某一个条件；外键约束 FOREIGN KEY 用来让两张表的数据之间建立连接，保证数据的一致性和完整性。"
+    },
+    {
+      "idx": 18,
+      "part": "A",
+      "section": "4.3.3 删除/更新行为",
+      "q": "外键约束的删除和更新行为有哪些？CASCADE 和 SET NULL 分别是什么效果？",
+      "reference": "NO ACTION 与 RESTRICT 是默认行为：在父表中删除或更新对应记录时，先检查该记录是否有对应外键，如果有则不允许删除或更新。CASCADE：在父表中删除或更新对应记录时，如果该记录有对应外键，则也删除或更新外键在子表中的记录。SET NULL：在父表中删除对应记录时，如果有对应外键，则设置子表中该外键值为 null，这要求该外键允许取 null。SET DEFAULT：父表有变更时，子表将外键列设置成一个默认值，InnoDB 不支持。"
+    },
+    {
+      "idx": 19,
+      "part": "A",
+      "section": "5.3 内连接 / 5.4 外连接",
+      "q": "内连接和外连接有什么区别？左外连接和右外连接分别查询什么？",
+      "reference": "内连接查询的是两张表交集的部分，语法有两种：隐式内连接 SELECT 字段列表 FROM 表1, 表2 WHERE 条件；显式内连接 SELECT 字段列表 FROM 表1 [INNER] JOIN 表2 ON 连接条件。外连接分两种：左外连接 SELECT 字段列表 FROM 表1 LEFT [OUTER] JOIN 表2 ON 条件，查询表1的所有数据和两表交集部分；右外连接把 LEFT 换成 RIGHT，查询表2的所有数据和两表交集部分。"
+    },
+    {
+      "idx": 20,
+      "part": "A",
+      "section": "5.5 自连接 / 5.6 子查询",
+      "q": "什么是自连接？子查询按结果可以分成哪几类？",
+      "reference": "自连接就是当前表和自身进行连接查询，必须给表起别名，自连接可以是内连接也可以是外连接。子查询按结果分为四类：标量子查询，结果为单个值；列子查询，结果为一列，可以是多行；行子查询，结果为一行为多列；表子查询，结果为多行多列。子查询可以出现在 where 之后、from 之后、select 之后。"
+    },
+    {
+      "idx": 21,
+      "part": "A",
+      "section": "5.1 多表关系",
+      "q": "一对多、多对多、一对一三种多表关系在数据库里分别怎么实现？",
+      "reference": "一对多：在多的一方建立外键，指向一的一方的主键。多对多：建立第三张中间表，中间表至少包含两个外键，分别关联两方主键。一对一：多用于单表拆分，在任意一方加入外键关联另一方的主键，并且设置该外键为唯一 UNIQUE。"
+    },
+    {
+      "idx": 22,
+      "part": "A",
+      "section": "6.3 事务四大特性",
+      "q": "数据库事务的四大特性（ACID）分别是什么？请解释每个特性的含义。",
+      "reference": "ACID 指原子性、一致性、隔离性、持久性。原子性 Atomicity：事务是不可分割的最小操作单元，要么全部成功，要么全部失败。一致性 Consistency：事务完成时，必须使所有的数据都保持一致状态。隔离性 Isolation：数据库系统提供的隔离机制，保证事务在不受外部并发操作影响的独立环境下运行。持久性 Durability：事务一旦提交或回滚，它对数据库中的数据的改变就是永久的。"
+    },
+    {
+      "idx": 23,
+      "part": "A",
+      "section": "6.4 并发事务问题 / 6.5 隔离级别",
+      "q": "并发事务会带来哪三个问题？MySQL 的四种隔离级别分别能解决哪些问题？",
+      "reference": "并发事务问题有三个：脏读，一个事务读到另一个事务还没有提交的数据；不可重复读，一个事务先后读取同一条记录但两次读取的数据不同；幻读，一个事务按照条件查询数据时没有对应的数据行，但在插入数据时又发现这行数据已经存在，好像出现了幻影。隔离级别从低到高：Read uncommitted 读未提交，什么问题都解决不了；Read committed 读已提交，能解决脏读；Repeatable Read 可重复读，能解决脏读和不可重复读，是 MySQL 的默认隔离级别；Serializable 串行化，能解决所有问题。"
+    },
+    {
+      "idx": 24,
+      "part": "B",
+      "section": "—— 应拒答",
+      "q": "怎么用 EXPLAIN 分析一条慢 SQL 的执行计划并进行索引优化？",
+      "reference": "该问题超出本知识库范围（本文档没有索引与执行计划优化章节），正确回复应说明知识库中没有相关资料，不应给出具体步骤或编造答案。",
+      "expect": "refuse"
+    },
+    {
+      "idx": 25,
+      "part": "B",
+      "section": "—— 应拒答",
+      "q": "MySQL 主从复制的原理是什么？如何配置一主一从？",
+      "reference": "该问题超出本知识库范围（本文档没有主从复制章节），正确回复应说明知识库中没有相关资料，不应给出具体步骤或编造答案。",
+      "expect": "refuse"
+    },
+    {
+      "idx": 26,
+      "part": "B",
+      "section": "—— 应拒答",
+      "q": "MySQL 8.0 的 Clone Plugin 怎么用来在线克隆一个实例？",
+      "reference": "该问题超出本知识库范围（本文档未涉及 Clone Plugin），正确回复应说明知识库中没有相关资料，不应给出具体步骤或编造答案。",
+      "expect": "refuse"
+    },
+    {
+      "idx": 27,
+      "part": "B",
+      "section": "—— 应拒答（跨系统）",
+      "q": "Redis 的 RDB 和 AOF 两种持久化方式有什么区别？生产环境应该怎么选？",
+      "reference": "该问题与本知识库无关（本文档只讲 MySQL，未涉及 Redis 持久化），正确回复应说明知识库中没有相关资料，不应给出具体步骤或编造答案。",
+      "expect": "refuse"
+    },
+    {
+      "idx": 28,
+      "part": "B",
+      "section": "—— 应拒答（跨库，测 scope 隔离）",
+      "q": "Chiron-AI 里怎么给智能体配置子模型 sub_model_name？",
+      "reference": "该问题不属于本知识库（MySQL 基础篇）范围，相关内容在本智能体挂载的知识库之外，正确回复应说明知识库中没有相关资料，不应编造配置方式。",
+      "expect": "refuse"
+    }
+  ]
+}
