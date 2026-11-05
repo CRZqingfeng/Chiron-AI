@@ -56,6 +56,9 @@ def _parse(argv):
     p.add_argument("--limit", type=int, default=0, help="只跑前 N 题（0=全部）")
     p.add_argument("--rag-llm", choices=["on", "off"], default="off", help="是否给 RAG 子图传 llm_config")
     p.add_argument("--dump-only", action="store_true", help="只取上下文，不生成回答")
+    p.add_argument("--vision", action="store_true",
+                   help="把图片块的像素一并喂给模型（真实多模态链路）。默认只拼图片链接，等于纯文本通道")
+    p.add_argument("--max-images", type=int, default=2, help="--vision 时最多送几张图")
     p.add_argument("--sleep", type=float, default=0.0, help="题间间隔秒数")
     return p.parse_args(argv)
 
@@ -132,17 +135,57 @@ def _format_ctx(docs: list[dict]) -> str:
         return "\n\n".join(blocks)
 
 
-def _generate(client, model: str, system_prompt: str, question: str, ctx: str) -> tuple[str, dict]:
+def _image_parts(docs: list[dict], max_images: int, max_bytes: int = 4 * 1024 * 1024) -> list[dict]:
+    """把检索命中的图片块的**像素**读出来，转成 OpenAI 兼容的 image_url part（data URI）。
+
+    为什么需要：文本块里没有的内容（截图里的 SQL、表格、公式）只在图片像素里。
+    只拼 markdown 链接等于让模型看不见图，测出来的低分不是产品能力。
+    """
+    import base64
+
+    from app.core import object_storage as obs
+    from app.settings.config import settings
+
+    parts: list[dict] = []
+    for d in docs:
+        if len(parts) >= max_images:
+            break
+        if (d.get("content_type") or "") != "image":
+            continue
+        meta = d.get("image_metadata") or {}
+        rel = (meta.get("stored_relpath") or "").strip()
+        if not rel:
+            continue
+        try:
+            raw = obs.read_bytes(obs.join_key(settings.USER_AGENT_KB_IMAGES_ROOT, rel))
+        except Exception as e:
+            print(f"  ⚠️ 读图失败 {rel}: {e}", flush=True)
+            continue
+        if len(raw) > max_bytes:
+            print(f"  ⚠️ 图片超限跳过 {rel} ({len(raw)} bytes)", flush=True)
+            continue
+        fmt = (meta.get("format") or "png").lower().lstrip(".")
+        uri = f"data:image/{fmt};base64," + base64.b64encode(raw).decode()
+        parts.append({"type": "image_url", "image_url": {"url": uri}})
+    return parts
+
+
+def _generate(client, model: str, system_prompt: str, question: str, ctx: str,
+              image_parts: list[dict] | None = None) -> tuple[str, dict]:
     sys_msg = (system_prompt or "你是一个乐于助人的助手。") + _SYS_KB_RULE
-    user_msg = (
+    user_text = (
         f"用户问题：{question}\n\n"
         f"【知识库检索结果】\n{ctx}\n\n"
         f"请基于以上检索结果回答问题。"
     )
+    if image_parts:
+        user_content: object = [{"type": "text", "text": user_text}, *image_parts]
+    else:
+        user_content = user_text
     t0 = time.time()
     resp = client.chat.completions.create(
         model=model,
-        messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}],
+        messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": user_content}],
         temperature=0.0,
     )
     usage = getattr(resp, "usage", None)
@@ -150,6 +193,7 @@ def _generate(client, model: str, system_prompt: str, question: str, ctx: str) -
         "gen_sec": round(time.time() - t0, 1),
         "prompt_tokens": getattr(usage, "prompt_tokens", None),
         "completion_tokens": getattr(usage, "completion_tokens", None),
+        "n_images_sent": len(image_parts or []),
     }
     return (resp.choices[0].message.content or "").strip(), meta
 
@@ -214,8 +258,11 @@ def main(argv=None) -> int:
                 client, agent["model_name"], agent["system_prompt"], q, refuse
             )
         else:
+            # ★ --vision：把命中的图片像素一起送进去，还原真实多模态链路；
+            #   不加这个开关就只拼图片 markdown 链接，等于只测纯文本通道。
+            imgs = _image_parts(docs, args.max_images) if args.vision else []
             response, gen_meta = _generate(
-                client, agent["model_name"], agent["system_prompt"], q, _format_ctx(docs)
+                client, agent["model_name"], agent["system_prompt"], q, _format_ctx(docs), imgs
             )
 
         row = {
@@ -256,6 +303,7 @@ def main(argv=None) -> int:
         rows.append(row)
         print(
             f"[{row['idx']:2d}] ctx={len(contexts)}(空{row['rag']['n_empty_text']}) "
+            f"图={gen_meta.get('n_images_sent', 0)} "
             f"no_answer={no_answer} rag={rag_sec}s gen={gen_meta.get('gen_sec', '-')}s "
             f"resp={len(response)}字  {q[:28]}",
             flush=True,
