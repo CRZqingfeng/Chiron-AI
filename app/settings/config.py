@@ -368,6 +368,11 @@ class Settings(BaseSettings):
     KB_RELATED_IMAGE_EXPANSION: bool = True
     KB_RELATED_IMAGE_MAX_PER_TEXT: int = 5
     KB_RELATED_IMAGE_MAX_TOTAL: int = 24
+    # 最终注入的片段条数（含图片块）。
+    # ★ 原本在 rag_pipeline 里三处硬编码 5，导致调参必须改代码、无法做 A/B 对照，故配置化。
+    #   注意语义：这是**总数上限**，其中 KB_MIN_IMAGE_SLOTS 个位置被图片保底占用，
+    #   所以文本实际可用位 = KB_TOP_K - min(KB_MIN_IMAGE_SLOTS, 图片候选数)。
+    KB_TOP_K: int = 5
     # 最终 top_k 中尽量保留至少 N 个图片块（有可用图片时；与纯文本按 score 争位）
     KB_MIN_IMAGE_SLOTS: int = 2
     # 为 True 时：在智能体每轮回复前，自动调用一次模型从知识库文档列表中圈选 file_key，再在该子集上检索
