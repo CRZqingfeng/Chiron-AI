@@ -15,6 +15,18 @@ from app.kb.rag_utils import (
 from app.settings import settings
 from app.utils.llm_factory import LlmFactory
 
+# 单次检索请求的片段数上限（含图片块）。取配置而非硬编码，便于做 A/B 对照。
+_DEFAULT_TOP_K = 5
+
+
+def kb_top_k() -> int:
+    """最终注入的片段条数。★ 语义是总数上限，其中 KB_MIN_IMAGE_SLOTS 个位置被图片保底占用。"""
+    try:
+        v = int(getattr(settings, "KB_TOP_K", _DEFAULT_TOP_K) or _DEFAULT_TOP_K)
+    except (TypeError, ValueError):
+        return _DEFAULT_TOP_K
+    return max(1, v)
+
 
 class ChunkRating(BaseModel):
     chunk_index: int = Field(description="被评分的片段编号（与提示中的 [N] 一致）")
@@ -163,7 +175,7 @@ def retrieve_initial(state: RAGState) -> RAGState:
     retrieved = retrieve_documents(
         query,
         kb_scope=kb_scope,
-        top_k=5,
+        top_k=kb_top_k(),
         include_images=include_images,
         document_filenames=document_filenames,
     )
@@ -460,7 +472,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         retrieved_hyde = retrieve_documents(
             hypothetical_doc,
             kb_scope=kb_scope,
-            top_k=5,
+            top_k=kb_top_k(),
             include_images=inc_img,
             document_filenames=doc_fn,
         )
@@ -511,7 +523,7 @@ def retrieve_expanded(state: RAGState) -> RAGState:
         retrieved_stepback = retrieve_documents(
             expanded_query,
             kb_scope=kb_scope,
-            top_k=5,
+            top_k=kb_top_k(),
             include_images=inc_img,
             document_filenames=doc_fn,
         )
