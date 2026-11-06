@@ -40,6 +40,12 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+_SYS_KB_RULE_PLAIN = (
+    "\n\n下面是知识库检索结果。请直接用连贯的段落回答问题："
+    "不要使用列表、编号、表格或代码块，不要在文中标注任何来源编号，"
+    "用 2~4 句话说清结论与关键依据即可。检索结果不足以回答时如实说明。"
+)
+
 _SYS_KB_RULE = (
     "\n\n你收到的是「知识库检索结果」。回答纪律：\n"
     "1) 只依据检索结果作答，不得使用检索结果以外的知识硬编结论；\n"
@@ -59,6 +65,8 @@ def _parse(argv):
     p.add_argument("--vision", action="store_true",
                    help="把图片块的像素一并喂给模型（真实多模态链路）。默认只拼图片链接，等于纯文本通道")
     p.add_argument("--max-images", type=int, default=2, help="--vision 时最多送几张图")
+    p.add_argument("--style", choices=["default", "plain"], default="default",
+                   help="回答风格。plain = 段落式作答、不列清单、不加引用标记（用于判定指标口味）")
     p.add_argument("--sleep", type=float, default=0.0, help="题间间隔秒数")
     return p.parse_args(argv)
 
@@ -171,8 +179,9 @@ def _image_parts(docs: list[dict], max_images: int, max_bytes: int = 4 * 1024 * 
 
 
 def _generate(client, model: str, system_prompt: str, question: str, ctx: str,
-              image_parts: list[dict] | None = None) -> tuple[str, dict]:
-    sys_msg = (system_prompt or "你是一个乐于助人的助手。") + _SYS_KB_RULE
+              image_parts: list[dict] | None = None, style: str = "default") -> tuple[str, dict]:
+    rule = _SYS_KB_RULE_PLAIN if style == "plain" else _SYS_KB_RULE
+    sys_msg = (system_prompt or "你是一个乐于助人的助手。") + rule
     user_text = (
         f"用户问题：{question}\n\n"
         f"【知识库检索结果】\n{ctx}\n\n"
@@ -255,14 +264,15 @@ def main(argv=None) -> int:
                 "可建议用户上传补充相关资料后重试；不要引用任何检索片段，也不要编造任何知识库结论。"
             )
             response, gen_meta = _generate(
-                client, agent["model_name"], agent["system_prompt"], q, refuse
+                client, agent["model_name"], agent["system_prompt"], q, refuse, style=args.style
             )
         else:
             # ★ --vision：把命中的图片像素一起送进去，还原真实多模态链路；
             #   不加这个开关就只拼图片 markdown 链接，等于只测纯文本通道。
             imgs = _image_parts(docs, args.max_images) if args.vision else []
             response, gen_meta = _generate(
-                client, agent["model_name"], agent["system_prompt"], q, _format_ctx(docs), imgs
+                client, agent["model_name"], agent["system_prompt"], q, _format_ctx(docs), imgs,
+                style=args.style,
             )
 
         row = {

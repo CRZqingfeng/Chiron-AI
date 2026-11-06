@@ -25,8 +25,10 @@ from ragas.metrics.collections import (
     ContextEntityRecall, NoiseSensitivity,
 )
 
-JUDGE_MODEL = "glm-5.3-flash"
-JUDGE_BASE = "https://open.bigmodel.cn/api/paas/v4"
+# 判官可由环境变量覆盖：换判官 = 换尺子，绝对分不可换算，只能同判官内做相对比较。
+# ★ 2026-11-07 智谱免费额度耗尽（429 code 1113），改用百炼 qwen 当判官（与被测 deepseek 不同家族）。
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", "").strip() or "glm-5.3-flash"
+JUDGE_BASE = os.getenv("JUDGE_BASE", "").strip() or "https://open.bigmodel.cn/api/paas/v4"
 
 _arg = lambda k, d: next((a.split("=", 1)[1] for a in sys.argv if a.startswith(f"--{k}=")), d)
 INPUT = _arg("in", ".tmp/ragas/collected_p6.json")
@@ -37,9 +39,8 @@ LIMIT = int(_arg("limit", "0")) or None
 METRICS = _arg("metrics", "faithfulness,answer_relevancy,context_precision,context_recall,context_entity_recall,noise_sensitivity")
 
 def _judge_key():
-    """判官密钥：优先环境变量 ZHIPU_API_KEY，其次 .tmp/ragas/.zhipu_key。
-    ★ 换项目时只设环境变量即可，不必带文件。"""
-    k = os.getenv("ZHIPU_API_KEY", "").strip()
+    """判官密钥：优先 JUDGE_API_KEY，其次 ZHIPU_API_KEY，最后 .tmp/ragas/.zhipu_key。"""
+    k = os.getenv("JUDGE_API_KEY", "").strip() or os.getenv("ZHIPU_API_KEY", "").strip()
     if k:
         return k
     for f in (".tmp/ragas/.zhipu_key", ".ragas/zhipu_key"):
@@ -65,12 +66,17 @@ def env_key(name):
 
 
 # ★ max_tokens 给足 + reasoning_effort=low：关不掉思考，就让它想得最少
+_EXTRA: dict = {"max_tokens": 32768, "temperature": 0}
+if JUDGE_MODEL.lower().startswith("glm"):
+    # glm-5.3-flash 关不掉思考，只能压到最少；思考 token 会先吃预算，max_tokens 必须给足
+    _EXTRA["reasoning_effort"] = "low"
+else:
+    _EXTRA["max_tokens"] = 8192
+
 llm = llm_factory(
     model=JUDGE_MODEL,
     client=AsyncOpenAI(api_key=ZHIPU_KEY, base_url=JUDGE_BASE, timeout=300),
-    max_tokens=32768,
-    temperature=0,
-    reasoning_effort="low",
+    **_EXTRA,
 )
 emb = embedding_factory(
     model="text-embedding-v4",
