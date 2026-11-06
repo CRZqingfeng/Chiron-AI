@@ -249,6 +249,7 @@ def main():
         "miss": ("未召回", "正确答案所在页一条都没进候选"),
         "gen": ("生成未综合", "上下文已含所需事实，回答没有归纳"),
         "image": ("图文无解", "答案只在图片像素里，纯文本通道拿不到"),
+        "metric": ("指标口径问题", "回答以“没有资料”开头时 answer_relevancy 会系统性判低，非能力问题"),
     }
     for t, items in by_type.items():
         label, why = TYPE_SAY.get(t, (t, ""))
@@ -281,7 +282,11 @@ def main():
                          f"<td class='mono'>{cm:.3f}</td>"
                          f"<td class='mono {cls}'>{d:+.3f}</td>"
                          f"<td class='{cls}'>{mark}</td></tr>")
-    before_after = ""
+    before_after = """
+<h2>三、改前 vs 改后</h2>
+<div class="card"><div class="dim">本次未提供改前基线（<code>--baseline1/--baseline2</code>），
+没有可比的前后数据 —— 这一节留空，不拿别的语料凑对比。</div></div>
+"""
     if cmp_rows:
         note = esc(a.change_note) or "本次改动"
         before_after = f"""

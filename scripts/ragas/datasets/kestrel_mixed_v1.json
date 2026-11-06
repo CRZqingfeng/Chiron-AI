@@ -1,0 +1,111 @@
+{
+ "meta": {
+  "name": "kestrel-mixed-v1",
+  "kb_scope": "u1_a3",
+  "corpus": [
+   "Kestrel平台部署架构.md",
+   "服务端口与资源分配表.xlsx",
+   "故障应急响应手册.docx",
+   "2026-09-18_发布故障日志.txt",
+   "Kestrel_API速查.pdf"
+  ],
+  "note": "第二组：异构格式（md / xlsx / docx / txt / pdf）。A 段 11 题进六指标，B 段 2 题应拒答单独统计。原 #11（HPA）经门控复测确认可答——文档明确写了不使用 k8s，故移入 A 段。",
+  "created": "2026-11-06",
+  "coverage": "5 份文档 · 4 种非 PDF 之外的格式 · 含跨文档题与跨格式题"
+ },
+ "questions": [
+  {
+   "idx": 1,
+   "part": "A",
+   "section": "Kestrel平台部署架构.md §2",
+   "q": "Kestrel 平台生产环境有哪些服务？各自的端口是多少？",
+   "reference": "生产环境有五个服务：gateway 用 8080，是统一入口与 Nginx 上游；order-api 用 18081，负责订单读写；user-api 用 18082，负责用户与鉴权；report-worker 用 18085，做报表异步任务；monitor-agent 用 18086，做指标采集与告警上报。"
+  },
+  {
+   "idx": 2,
+   "part": "A",
+   "section": "服务端口与资源分配表.xlsx · 资源配额",
+   "q": "生产环境各服务的 CPU、内存和副本数分别配了多少？",
+   "reference": "gateway 是 2C / 2G / 2 副本；order-api 是 4C / 8G / 3 副本；user-api 是 2C / 4G / 2 副本；report-worker 是 8C / 16G / 1 副本；monitor-agent 是 1C / 1G / 1 副本。"
+  },
+  {
+   "idx": 3,
+   "part": "A",
+   "section": "服务端口与资源分配表.xlsx · 端口分配 / 变更记录",
+   "q": "测试环境里存在端口冲突的是哪两个服务？冲突在哪个端口上？后来打算怎么解决？",
+   "reference": "冲突双方是 report-worker 和 monitor-agent，都登记在 18085 端口。变更记录显示 2026-09-02 monitor-agent 在 test 环境也申请了 18085，登记时没有标注冲突，被记为遗留问题。后续计划把 monitor-agent 的 test 端口改为 18088，但截至记录时尚未实施。"
+  },
+  {
+   "idx": 4,
+   "part": "A",
+   "section": "故障应急响应手册.docx §二",
+   "q": "P1 级和 P2 级故障分别要求多久响应、多久恢复？",
+   "reference": "P1 级是全站不可用或已造成资金损失，要求 5 分钟内响应、30 分钟内恢复，并立即拉起应急群。P2 级是核心功能受损但站点整体可用，例如下单成功率低于 90%，要求 15 分钟内响应、2 小时内恢复，进展每 30 分钟同步一次。"
+  },
+  {
+   "idx": 5,
+   "part": "A",
+   "section": "故障应急响应手册.docx §四",
+   "q": "发现服务起不来、日志报端口已被占用时，应该按什么步骤处置？",
+   "reference": "先用 ss -lntp 加端口号确认占用进程，并查清它属于哪个服务、哪个环境。然后判断归属：如果占用方是同环境的另一个服务，就改后部署方（本次要发布的服务）的端口，不去动已在运行的服务。改完端口必须同步更新端口分配表。如果占用方是历史残留进程可以直接终止重启；如果属于其他团队，必须先通知对方负责人，严禁直接 kill。临时改端口只用于恢复，事后要补正式的端口规划。"
+  },
+  {
+   "idx": 6,
+   "part": "A",
+   "section": "故障应急响应手册.docx §五",
+   "q": "发布引发故障需要回滚，回滚分哪几步？",
+   "reference": "回滚分三步且顺序不可颠倒：第一步切回上一版本的镜像 tag，当前版本镜像要保留不要删除，便于事后分析；第二步执行数据库回滚脚本，只有在本次发布包含 DDL 变更时才需要，纯代码发布跳过；第三步验证，先确认 /healthz 返回 200，再跑下单、查单、取消单三条核心链路冒烟，三项全通过才算回滚完成。"
+  },
+  {
+   "idx": 7,
+   "part": "A",
+   "section": "2026-09-18_发布故障日志.txt",
+   "q": "2026-09-18 那次发布故障，report-worker 起不来的直接原因是什么？最后是怎么恢复的？",
+   "reference": "直接原因是端口被占用：monitor-agent 的 test 实例（进程 28741）已经监听在 18085，report-worker 启动时抛出 BindException: Address already in use，重试 3 次后退出。恢复动作是把 report-worker 的端口从 18085 改成 18087 后重新启动成功。之后又因为报表任务堆积导致堆内存溢出，把堆从 -Xmx8g 调整为 -Xmx14g，任务积压清空后服务恢复。"
+  },
+  {
+   "idx": 8,
+   "part": "A",
+   "section": "Kestrel_API速查.pdf §一/§二",
+   "q": "调用 Kestrel 的业务接口，鉴权方式和 token 有效期是什么？限流是多少？",
+   "reference": "鉴权用 Bearer Token，请求头必须携带 Authorization: Bearer <token>。Token 由 user-api 签发，有效期 7200 秒，过期后需要重新获取，不支持自动续期。网关对单租户默认限流 100 QPS，突发允许到 150 QPS 但持续不超过 10 秒，超过返回 429 并带 Retry-After；报表类接口单独限流 20 QPS。"
+  },
+  {
+   "idx": 9,
+   "part": "A",
+   "section": "跨文档：xlsx + docx",
+   "q": "如果 report-worker 在测试环境又撞了端口起不来，按手册应该改谁、之后还要做什么？",
+   "reference": "应该改后部署方也就是 report-worker 自己的端口，而不是去动已经在运行的 monitor-agent。具体步骤是先用 ss -lntp 确认 18085 的占用进程与归属，确认是 monitor-agent 的 test 实例后，把 report-worker 的端口改到未被占用的值。改完必须同步更新《服务端口与资源分配表》，否则下次发布还会撞；临时端口只用于恢复，事后要补正式的端口规划。"
+  },
+  {
+   "idx": 10,
+   "part": "A",
+   "section": "跨格式：md + pdf",
+   "q": "生产环境能不能直接调 order-api 的 18081 端口？为什么？",
+   "reference": "不能。order-api 虽然监听 18081，但生产环境所有业务接口都必须以 /v1 开头统一走网关 8080 端口，直连 18081 会绕过鉴权与限流。"
+  },
+  {
+   "idx": 11,
+   "part": "A",
+   "section": "Kestrel平台部署架构.md §1",
+   "q": "Kestrel 平台的 HPA 自动扩缩容策略是怎么配置的？",
+   "reference": "Kestrel 不使用 Kubernetes，所有服务以容器方式运行在自建物理节点上（node-a、node-b、node-c），因此不存在 HPA 自动扩缩容配置。它的扩缩容方式是修改部署脚本里的副本数后重新发布。"
+  },
+  {
+   "idx": 12,
+   "part": "B",
+   "section": "—— 应拒答",
+   "q": "Kestrel 用的 Redis 如果要做 Cluster 模式的 slot 迁移，具体步骤是什么？",
+   "reference": "该问题超出本知识库范围（文档只给了 Redis 主机端口与 database 编号，没有 Cluster 与 slot 迁移内容），正确回复应说明知识库中没有相关资料。",
+   "expect": "refuse"
+  },
+  {
+   "idx": 13,
+   "part": "B",
+   "section": "—— 应拒答（跨库）",
+   "q": "MySQL 的四种事务隔离级别分别能解决什么问题？",
+   "reference": "该问题不在本知识库（Kestrel 运维文档）范围内，相关内容属于另一个知识库，正确回复应说明本知识库中没有相关资料。",
+   "expect": "refuse"
+  }
+ ]
+}
