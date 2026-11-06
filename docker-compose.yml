@@ -56,8 +56,11 @@ services:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
     ports:
-      - "127.0.0.1:9101:9001" # 宿主机改 9101，避开 fm-minio 占用的 9001；容器内部仍走 minio:9001
-      - "127.0.0.1:9100:9000" # 宿主机改 9100，避开 fm-minio 占用的 9000；Milvus 经容器网络访问 minio:9000 不受影响
+      # 宿主端口原为 9100/9101，2026-11-06 重启后落入 Windows 保留段 9081–9180（绑定报
+      # "attempt to access a socket in a way forbidden"），故改到 9310/9311。
+      # 容器内部仍走 minio:9000/9001，Milvus 经容器网络访问，不受宿主端口影响。
+      - "127.0.0.1:9311:9001"
+      - "127.0.0.1:9310:9000"
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
     command: minio server /minio_data --console-address ":9001"
@@ -106,7 +109,8 @@ services:
       retries: 3
     ports:
       - "127.0.0.1:19530:19530"
-      - "127.0.0.1:9091:9091"
+      # 9091 同样落入 Windows 保留段 9081–9180（2026-11-06 重启后），改到 9391
+      - "127.0.0.1:9391:9091"
     depends_on:
       - "etcd"
   attu:
