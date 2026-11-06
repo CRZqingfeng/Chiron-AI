@@ -447,6 +447,239 @@ def write_pdf(p: Path) -> None:
     doc.build(flow)
 
 
+# ---------------- 第二批：把候选池从 40 chunk 撑到 100+ ----------------
+# 目的不是"多"，而是让检索有真实干扰项：同一平台的其他主题文档。
+# 事实必须与第一批一致（服务名、端口、配额、人物、事故编号），否则题目的参考答案会自相矛盾。
+
+def write_order_api_docx(p: Path) -> None:
+    """字段级接口设计：与《API 速查》呼应但更细，制造"相关但不含答案"的干扰。"""
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    doc.add_heading("订单服务接口详细设计", level=0)
+    r = doc.add_paragraph("文档编号 DEV-ORDER-012 · 版本 3.6 · 更新 2026-09-08 · 作者 刘洋")
+    r.runs[0].font.size = Pt(9)
+
+    doc.add_heading("1. 概述", level=1)
+    doc.add_paragraph(
+        "本文只描述 order-api 的请求与响应字段级约定。鉴权、限流、错误码的统一约定见《Kestrel API 速查》，"
+        "本文不重复。所有时间字段均为 ISO8601 带时区，金额单位为分，避免浮点误差。"
+    )
+
+    doc.add_heading("2. 创建订单 POST /v1/orders", level=1)
+    doc.add_paragraph("请求体字段如下表。除标注可选的字段外均为必填，缺字段直接返回 400，不做默认值填充。")
+    t = doc.add_table(rows=1, cols=4)
+    t.style = "Table Grid"
+    h = t.rows[0].cells
+    h[0].text, h[1].text, h[2].text, h[3].text = "字段", "类型", "必填", "说明"
+    for f, ty, req, desc in [
+        ("sku", "string(32)", "是", "商品编码，需在商品中心存在"),
+        ("qty", "int", "是", "数量，1 到 999"),
+        ("tenant_id", "string(16)", "是", "租户标识，由网关注入，客户端传了也忽略"),
+        ("channel", "string(16)", "否", "下单渠道，默认 app，可选 app / web / openapi"),
+        ("remark", "string(200)", "否", "备注，不做业务校验"),
+        ("idempotency_key", "string(64)", "否", "幂等键，也可放在请求头 X-Idempotency-Key"),
+    ]:
+        row = t.add_row().cells
+        row[0].text, row[1].text, row[2].text, row[3].text = f, ty, req, desc
+
+    doc.add_paragraph(
+        "幂等实现：服务端以 tenant_id 加 idempotency_key 做唯一索引，24 小时内重复提交同一键直接返回首次结果，"
+        "不会新建订单。没有传幂等键的请求不做去重，超时重试可能产生重复订单，客户端务必自己保证。"
+    )
+
+    doc.add_heading("3. 订单状态机", level=1)
+    doc.add_paragraph(
+        "订单只有五个状态：待支付、已支付、已发货、已完成、已取消。状态只能单向流转，不允许回退。"
+        "待支付超过 30 分钟由定时任务自动关闭；已支付订单只能取消不能删除；已发货订单取消需要走售后流程。"
+    )
+    doc.add_paragraph(
+        "取消接口 POST /v1/orders/{id}/cancel 只接受待支付与已支付两种状态，其他状态返回 40902。"
+        "取消是异步的，接口返回 202 表示已受理，最终结果通过回调通知。"
+    )
+
+    doc.add_heading("4. 查询订单 GET /v1/orders/{id}", level=1)
+    doc.add_paragraph(
+        "返回体包含订单主体、明细行、支付信息三段。明细行最多返回 50 行，超过部分需要分页接口单独拉取。"
+        "查询默认走从库，主从延迟最大 3 秒，下单后立刻查询可能读不到，需要强一致请带 ?consistent=true，"
+        "但该参数会把请求打到主库，QPS 上限只有 50，不建议在高频链路使用。"
+    )
+
+    doc.add_heading("5. 回调与重试", level=1)
+    doc.add_paragraph(
+        "状态变更通过回调推送给业务方，回调地址在租户配置里登记。失败重试 5 次，间隔分别为 5 秒、30 秒、"
+        "2 分钟、10 分钟、30 分钟，全部失败后进入死信队列，需要人工在后台重放。"
+    )
+
+    doc.add_heading("6. 已知限制", level=1)
+    doc.add_paragraph(
+        "单个订单最多 50 个明细行；单租户下单峰值按 100 QPS 设计，超过会被网关限流；"
+        "跨租户查询一律拒绝，返回 40301。批量创建接口目前不提供，需要循环调用单个创建。"
+    )
+    doc.save(p)
+
+
+def write_db_design_md(p: Path) -> None:
+    lines = [
+        "# 数据库设计说明（订单库）",
+        "",
+        "> 版本 v2.4 · 更新 2026-08-30 · 维护 刘洋",
+        "",
+        "## 1. 分库分表规则",
+        "",
+        "订单主库 `kestrel_order` 逻辑上是一张表，物理上按 `user_id % 8` 拆成 8 个分片，",
+        "分片名 `t_order_0` 到 `t_order_7`，路由由中间件完成，应用不感知。",
+        "",
+        "分片键只能是 `user_id`。**按 `order_id` 直接查会全分片扫描**，因此所有按订单号查询的接口",
+        "都必须带 `user_id`，否则走的是兜底广播查询，耗时是正常查询的 8 倍以上。",
+        "",
+        "## 2. 核心表结构",
+        "",
+        "```sql",
+        "CREATE TABLE t_order_0 (",
+        "  id            BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',",
+        "  order_no      VARCHAR(32)  NOT NULL COMMENT '业务订单号',",
+        "  user_id       BIGINT       NOT NULL COMMENT '用户ID，分片键',",
+        "  tenant_id     VARCHAR(16)  NOT NULL COMMENT '租户',",
+        "  status        TINYINT      NOT NULL DEFAULT 0 COMMENT '0待支付 1已支付 2已发货 3已完成 4已取消',",
+        "  amount        BIGINT       NOT NULL COMMENT '金额，单位分',",
+        "  created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,",
+        "  updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,",
+        "  PRIMARY KEY (id),",
+        "  UNIQUE KEY uk_order_no (order_no),",
+        "  UNIQUE KEY uk_tenant_idem (tenant_id, idempotency_key),",
+        "  KEY idx_user_status (user_id, status, created_at)",
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",
+        "```",
+        "",
+        "`idempotency_key` 字段在示例里省略，实际与 `tenant_id` 组成唯一索引，这是幂等的实现基础。",
+        "",
+        "## 3. 索引约定",
+        "",
+        "- 所有查询必须命中索引，禁止 `select *` 无 `where` 的全表扫描。",
+        "- `user_id + status + created_at` 是订单列表页的固定组合索引，顺序不可调整。",
+        "- 新增索引前必须用 `EXPLAIN` 确认现有索引未命中，并在变更单里贴出执行计划。",
+        "- 单表索引数量上限 5 个，超过说明查询模式有问题，应先收敛查询而不是继续加索引。",
+        "",
+        "## 4. 慢查询治理",
+        "",
+        "**注意：这一节讲的是治理流程，不包含 `EXPLAIN` 各字段的判读方法**，那部分见官方文档。",
+        "",
+        "慢查询阈值设为 1 秒，超过 1 秒的 SQL 会被记录到慢日志。每周导出一次并按出现次数排序，",
+        "前 20 条必须逐一处理。处理方式优先是改查询、加索引次之，最后才考虑调优参数。",
+        "",
+        "## 5. 备份与恢复",
+        "",
+        "每日 02:00 全量备份，每小时 binlog 增量归档，保留 7 天。恢复演练每季度一次，",
+        "演练目标是在 30 分钟内把单分片恢复到任意时间点。2026 年 Q3 演练结果：实测 22 分钟。",
+        "",
+        "## 6. 与其他组件的边界",
+        "",
+        "- Redis 只做缓存与任务队列，**不存业务主数据**，缓存失效后必须能从 MySQL 完整重建。",
+        "- 报表数据落在 MinIO，不入库。",
+        "- 监控指标走 monitor-agent 上报，不写在业务库里。",
+        "",
+    ]
+    p.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+
+
+def write_alert_rule_xlsx(p: Path) -> None:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "告警规则"
+    ws.append(["指标", "对象", "阈值", "持续时长", "级别", "通知渠道"])
+    rows = [
+        ("CPU 使用率", "全部节点", "85%", "5 分钟", "P3", "值班群"),
+        ("内存使用率", "node-c", "90%", "3 分钟", "P2", "值班群 + 电话"),
+        ("内存使用率", "node-a/node-b", "90%", "5 分钟", "P3", "值班群"),
+        ("磁盘使用率", "全部节点", "80%", "10 分钟", "P3", "值班群"),
+        ("下单成功率", "order-api", "<95%", "2 分钟", "P2", "值班群 + 负责人"),
+        ("下单成功率", "order-api", "<80%", "1 分钟", "P1", "电话 + 应急群"),
+        ("接口 P99 延迟", "gateway", ">1500ms", "5 分钟", "P3", "值班群"),
+        ("接口错误率", "gateway", ">5%", "3 分钟", "P2", "值班群"),
+        ("报表任务积压", "report-worker", ">100 条", "10 分钟", "P3", "值班群"),
+        ("报表任务积压", "report-worker", ">500 条", "5 分钟", "P2", "值班群 + 负责人"),
+        ("Redis 连接数", "10.20.30.12", ">800", "5 分钟", "P3", "值班群"),
+        ("MySQL 主从延迟", "10.20.30.11", ">10 秒", "3 分钟", "P2", "值班群"),
+    ]
+    for r in rows:
+        ws.append(list(r))
+    for c in range(1, 7):
+        cell = ws.cell(row=1, column=c)
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor="FCE4D6")
+        cell.alignment = Alignment(horizontal="center")
+    for col, w in (("A", 18), ("B", 20), ("C", 12), ("D", 12), ("E", 8), ("F", 22)):
+        ws.column_dimensions[col].width = w
+
+    ws2 = wb.create_sheet("静默规则")
+    ws2.append(["场景", "静默时长", "说明"])
+    for r in [
+        ("发布窗口", "30 分钟", "发布期间屏蔽 P3 级告警，P1/P2 不屏蔽"),
+        ("备份窗口", "60 分钟", "每日 02:00 至 03:00 屏蔽磁盘 IO 相关告警"),
+        ("演练窗口", "按需", "演练前在告警平台登记，登记期内只记录不通知"),
+    ]:
+        ws2.append(list(r))
+    for c in range(1, 4):
+        ws2.cell(row=1, column=c).font = Font(bold=True)
+    for col, w in (("A", 18), ("B", 12), ("C", 56)):
+        ws2.column_dimensions[col].width = w
+    wb.save(p)
+
+
+def write_capacity_docx(p: Path) -> None:
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    doc.add_heading("2026 年 Q3 容量规划复盘", level=0)
+    r = doc.add_paragraph("文档编号 CAP-2026Q3 · 编写 张伟 · 日期 2026-10-10")
+    r.runs[0].font.size = Pt(9)
+
+    doc.add_heading("一、Q3 实际水位", level=1)
+    doc.add_paragraph(
+        "订单峰值出现在 9 月 12 日，全天 186 万单，峰值 QPS 78，是容量设计值 100 QPS 的 78%。"
+        "报表任务峰值出现在每月 1 日，单日 2.1 万个任务，report-worker 单副本平均耗时 4.2 分钟每任务。"
+    )
+    doc.add_paragraph(
+        "节点水位方面，node-c 峰值内存占用 94%，已触发 P2 告警（见 9 月 18 日事故）；"
+        "node-a 与 node-b 峰值内存 61%，仍有空间。CPU 三台节点均未超过 70%。"
+    )
+
+    doc.add_heading("二、Q4 扩容建议", level=1)
+    doc.add_paragraph(
+        "第一优先是把 node-c 从 8C16G 扩到 16C32G。理由是 report-worker 独占 node-c 且堆已调到 14G，"
+        "现有 16G 物理内存只剩 2G 余量，再有任何驻留进程都会触发 OOM。扩到 32G 后堆可以给到 24G，"
+        "报表积压消化能力预计提升 1.6 倍。"
+    )
+    doc.add_paragraph(
+        "第二优先是给 report-worker 增加第二个副本，但需要先把任务队列的抢占逻辑改成分布式锁，"
+        "否则两个副本会重复消费同一任务。这项工作预计 3 人日，建议放在 Q4 上半段。"
+    )
+    doc.add_paragraph(
+        "暂不建议扩 order-api 副本数。当前 3 副本下 P99 延迟 210ms，离 1500ms 的告警线还很远，"
+        "盲目扩容只会增加数据库连接数压力。"
+    )
+
+    doc.add_heading("三、成本与收益", level=1)
+    doc.add_paragraph(
+        "node-c 扩容一次性投入约 2.4 万元，年度电费与折旧摊到每月约 900 元。"
+        "对应收益是报表类 P2 事故预计从每季度 1.5 次降到 0.3 次，按每次事故平均影响 40 分钟计算，"
+        "一个季度可减少约 48 分钟的对外不可用时间。"
+    )
+
+    doc.add_heading("四、遗留问题", level=1)
+    doc.add_paragraph(
+        "端口分配表仍有未收口的冲突（monitor-agent test 环境 18085 与 report-worker 冲突，工单 OPS-2291），"
+        "本季度未解决，顺延到 Q4。教训是端口申请必须走登记流程，口头约定一定会忘。"
+    )
+    doc.save(p)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=".tmp/ragas/corpus2")
@@ -459,6 +692,11 @@ def main() -> None:
     write_docx(out / "故障应急响应手册.docx")
     write_txt(out / "2026-09-18_发布故障日志.txt")
     write_pdf(out / "Kestrel_API速查.pdf")
+    # 第二批：撑大候选池
+    write_order_api_docx(out / "订单服务接口详细设计.docx")
+    write_db_design_md(out / "数据库设计说明.md")
+    write_alert_rule_xlsx(out / "监控指标与告警规则.xlsx")
+    write_capacity_docx(out / "2026Q3容量规划复盘.docx")
 
     for f in sorted(out.iterdir()):
         print(f"{f.name:36s} {f.stat().st_size:>8,} bytes")
