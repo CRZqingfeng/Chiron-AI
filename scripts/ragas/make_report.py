@@ -27,7 +27,7 @@ META = [
     ("context_precision", "上下文精度", 0.85, "high", "注入的块里，有用的排得靠不靠前"),
     ("context_recall", "上下文召回", 0.70, "high", "回答需要的信息有没有被捞回来"),
     ("context_entity_recall", "实体召回", None, "info", "★ 中文语料不可靠，只看趋势，不作门槛"),
-    ("noise_sensitivity", "噪声敏感度", None, "info", "★ 对判官口径极敏感（差 2~3 倍），只看趋势"),
+    ("noise_sensitivity", "噪声敏感度", None, "low", "★ 对判官口径极敏感（差 2~3 倍）；越低越好，只看趋势"),
 ]
 CORE = {"faithfulness", "answer_relevancy", "context_precision", "context_recall"}
 

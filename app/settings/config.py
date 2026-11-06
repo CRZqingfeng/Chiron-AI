@@ -362,7 +362,10 @@ class Settings(BaseSettings):
 
     # Auto-merge / 叶子层（与 SuperMew 一致）
     AUTO_MERGE_ENABLED: bool = True
-    AUTO_MERGE_THRESHOLD: int = 3
+    # 同一父级下命中多少个叶子块才合并回父块。3→2 的实测（23 题，同批判官）：
+    # 合并触发 1/23 → 22/23，块长中位 330→490 字，context_recall 0.885→0.936、
+    # context_precision 0.938→0.935（噪声内）。代价：每题上下文总字数 +45%~62%。
+    AUTO_MERGE_THRESHOLD: int = 2
     LEAF_RETRIEVE_LEVEL: int = 3
     # 多模态 RAG：命中「文本块」时按 PostgreSQL 中 related_text_ids 拉取同页/邻近关联图片并并入候选
     KB_RELATED_IMAGE_EXPANSION: bool = True
