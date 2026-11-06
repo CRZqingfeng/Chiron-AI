@@ -51,6 +51,23 @@ def esc(s):
     return html.escape(str(s if s is not None else ""))
 
 
+REFUSAL_MARKS = (
+    "没有相关资料", "无相关资料", "没有找到相关资料", "未找到相关资料",
+    "未找到与", "没有找到与", "知识库中没有", "知识库未", "知识库检索结果中没有",
+    "无法基于检索结果", "无法依据检索结果", "无法根据检索结果", "无法回答这个问题",
+)
+
+
+def is_refusal(text: str) -> bool:
+    """判断回答是否属于"如实拒答"。
+
+    ★ 不要用单一短语匹配：实测 #13 写的是"知识库**检索结果中**没有相关资料"，
+    按 "知识库中" 匹配会漏判，把 2/2 算成 1/2。这里用多标志词任一命中。
+    """
+    t = text or ""
+    return any(m in t for m in REFUSAL_MARKS)
+
+
 def is_peak(ts: datetime) -> bool:
     return ts.weekday() < 5 and (9 <= ts.hour < 12 or 14 <= ts.hour < 18)
 
@@ -179,7 +196,7 @@ def main():
     refuse_ok = 0
     for r in refuse_rows:
         txt = r.get("response") or ""
-        if ("知识库中" in txt and ("没有" in txt or "未" in txt)) or "无法基于检索结果" in txt or "无法依据检索结果" in txt:
+        if is_refusal(txt):
             refuse_ok += 1
 
     concl = []
@@ -389,8 +406,7 @@ def main():
 
     rrows = ""
     for r in refuse_rows:
-        ok = (("知识库中" in (r.get("response") or "") and ("没有" in (r.get("response") or "") or "未" in (r.get("response") or "")))
-              or "无法基于检索结果" in (r.get("response") or "") or "无法依据检索结果" in (r.get("response") or ""))
+        ok = is_refusal(r.get("response") or "")
         rrows += f"""
         <div class="refuse {'ok' if ok else 'bad'}">
           <div class="rh"><span class="tag {'ok' if ok else 'bad'}">{'✓ 如实拒答' if ok else '✗ 未拒答'}</span>
