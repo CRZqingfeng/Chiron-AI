@@ -90,7 +90,9 @@ if JUDGE_MODEL.lower().startswith("glm"):
     # glm-5.3-flash 关不掉思考，只能压到最少；思考 token 会先吃预算，max_tokens 必须给足
     _EXTRA["reasoning_effort"] = "low"
 else:
-    _EXTRA["max_tokens"] = 8192
+    # ★ 实测：给 8192 会 IncompleteOutputException（该模型带 reasoning tokens，
+    #   复杂指标如 context_precision 判定输出很长），必须给足
+    _EXTRA["max_tokens"] = 32768
 
 llm = llm_factory(
     model=JUDGE_MODEL,
@@ -119,31 +121,54 @@ def val(r):
     return round(float(getattr(r, "value", r)), 4)
 
 
+MAX_ATTEMPTS = 3  # 含首次；429 / 超时属可恢复失败，退避后重试
+
+
 async def one(name, metric, row, sem):
+    """跑单个判定，失败自动重试。
+
+    ★ 实测坑：书生·砚眼在高并发下会返回 429「Channel rate limit reached」。
+    原先一次失败就落盘，既丢分又没有退避；这里按错误类型退避，
+    限流用更长间隔（12s / 24s），普通错误 3s / 6s。
+    """
     async with sem:
         t0 = time.time()
-        try:
-            if name in ("context_precision", "context_recall"):
-                r = await metric.ascore(user_input=row["user_input"], reference=row["reference"],
-                                        retrieved_contexts=row["retrieved_contexts"])
-            elif name == "context_entity_recall":
-                r = await metric.ascore(reference=row["reference"],
-                                        retrieved_contexts=row["retrieved_contexts"])
-            elif name == "faithfulness":
-                r = await metric.ascore(user_input=row["user_input"], response=row["response"],
-                                        retrieved_contexts=row["retrieved_contexts"])
-            elif name == "answer_relevancy":
-                r = await metric.ascore(user_input=row["user_input"], response=row["response"])
-            else:  # noise_sensitivity
-                r = await metric.ascore(user_input=row["user_input"], response=row["response"],
-                                        reference=row["reference"],
-                                        retrieved_contexts=row["retrieved_contexts"])
-            return {"score": val(r), "sec": round(time.time() - t0, 1), "error": None}
-        except Exception as e:
-            return {"score": None, "sec": round(time.time() - t0, 1), "error": repr(e)[:300]}
+        last = None
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                if name in ("context_precision", "context_recall"):
+                    r = await metric.ascore(user_input=row["user_input"], reference=row["reference"],
+                                            retrieved_contexts=row["retrieved_contexts"])
+                elif name == "context_entity_recall":
+                    r = await metric.ascore(reference=row["reference"],
+                                            retrieved_contexts=row["retrieved_contexts"])
+                elif name == "faithfulness":
+                    r = await metric.ascore(user_input=row["user_input"], response=row["response"],
+                                            retrieved_contexts=row["retrieved_contexts"])
+                elif name == "answer_relevancy":
+                    r = await metric.ascore(user_input=row["user_input"], response=row["response"])
+                else:  # noise_sensitivity
+                    r = await metric.ascore(user_input=row["user_input"], response=row["response"],
+                                            reference=row["reference"],
+                                            retrieved_contexts=row["retrieved_contexts"])
+                return {"score": val(r), "sec": round(time.time() - t0, 1),
+                        "error": None, "attempts": attempt}
+            except Exception as e:
+                last = repr(e)[:300]
+                if attempt < MAX_ATTEMPTS:
+                    limited = "429" in last or "rate" in last.lower()
+                    await asyncio.sleep((12 if limited else 3) * attempt)
+        return {"score": None, "sec": round(time.time() - t0, 1),
+                "error": last, "attempts": MAX_ATTEMPTS}
 
 
 def read_partial():
+    """读已完成结果 —— **只认成功项**。
+
+    ★ 早期版本把失败结果也写进 partial 并当成 done，导致重跑时 31 个失败判定
+    被永久跳过，输出文件里静默留下 31 个 None。失败行保留在文件中做诊断，
+    但不算完成；重跑时 append 的成功行会自然覆盖。
+    """
     out = {}
     if os.path.exists(PARTIAL):
         for line in open(PARTIAL, encoding="utf-8"):
@@ -152,7 +177,10 @@ def read_partial():
                 continue
             try:
                 d = json.loads(line)
-                out[(d["idx"], d["metric"])] = d["result"]
+                res = d.get("result") or {}
+                if res.get("error") or res.get("score") is None:
+                    continue
+                out[(d["idx"], d["metric"])] = res
             except Exception:
                 pass
     return out
@@ -186,8 +214,10 @@ async def main():
 
     allres = read_partial()
     final = []
+    missing = []
     for row in rows:
         scores = {n: allres.get((row["idx"], n), {"score": None})["score"] for n in M}
+        missing += [(row["idx"], n) for n in M if scores[n] is None]
         final.append({**{k: row[k] for k in ("idx", "user_input", "response", "reference",
                                              "retrieved_contexts", "source_meta", "rag")},
                       "scores": scores})
@@ -203,6 +233,12 @@ async def main():
             print(f"  {n:22s} {st.mean(vs):.3f}  (n={len(vs)}/{len(final)})")
         else:
             print(f"  {n:22s} 无数据")
+
+    if missing:
+        print(f"\n⚠ 警告：仍有 {len(missing)} 个判定失败，输出里对应 score 为 None："
+              f"{missing[:8]}{' …' if len(missing) > 8 else ''}", flush=True)
+        print("  直接重跑同一条命令即可续跑（失败项不会被当成已完成）。", flush=True)
+        sys.exit(2)
 
 
 asyncio.run(main())

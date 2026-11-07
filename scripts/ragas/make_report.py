@@ -73,9 +73,13 @@ def is_peak(ts: datetime) -> bool:
 
 
 def main():
+    global META
     ap = argparse.ArgumentParser()
     ap.add_argument("--r1", required=True)
     ap.add_argument("--r2", default="")
+    ap.add_argument("--metrics", default=",".join(m[0] for m in META),
+                    help="本版报告呈现哪些指标；换判官时只传统一重判过的那几项，避免混口径")
+    ap.add_argument("--title", default="Chiron-AI · RAGAS 评估")
     ap.add_argument("--refuse", default="", help="B 段取数结果（collected 格式）")
     ap.add_argument("--gate", default="", help="B 段在 rag_llm=on 下的复测结果，用于统计 no_answer 门控")
     ap.add_argument("--collect1", default="", help="第一轮 collected，用于算 token")
@@ -83,14 +87,34 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--corpus", default="MySQL-基础篇.pdf")
     ap.add_argument("--model", default="deepseek-flash")
-    ap.add_argument("--judge", default="glm-5.3-flash")
+    ap.add_argument("--judge", default="", help="留空则读 .tmp/ragas/judge.json")
+    ap.add_argument("--judge-note", default="", help="判官的一句话说明，别写死在模板里")
+    ap.add_argument("--judge-cost", default="¥ 0", help="判官成本展示值")
+    ap.add_argument("--judge-cost-note", default="按额度计费")
+    ap.add_argument("--judge-cost-detail", default="判官按平台额度计费，未折算人民币")
+    ap.add_argument("--pipeline", default="固定检索一次 → 基于结果作答（rag_llm=off 基线口径）")
+    ap.add_argument("--embedding", default="text-embedding-v4")
+    ap.add_argument("--scope", default="u1_a2")
+    ap.add_argument("--scope-note", default="", help="口径说明，放在页头下方醒目位置")
+    ap.add_argument("--limits", default="题目由助手编写、需人工复核；实体召回与噪声敏感度在中文语料下不可靠，未作门槛")
     ap.add_argument("--topk", default="5")
+    ap.add_argument("--merge", default="2", help="父块合并阈值，页头展示用")
     ap.add_argument("--baseline1", default="", help="改前第一轮判分结果（用于前后对比）")
     ap.add_argument("--baseline2", default="", help="改前第二轮判分结果")
     ap.add_argument("--change-note", default="", help="这次改了什么，显示在对比块标题里")
     ap.add_argument("--diagnose", default="",
                     help='分诊清单 JSON：[{"idx":5,"type":"fragment","label":"分块碎片","evidence":"..."}]')
     a = ap.parse_args()
+    if not a.judge:
+        _jc = load(".tmp/ragas/judge.json") or {}
+        a.judge = _jc.get("model", "glm-5.3-flash")
+
+    # 只保留本版要呈现的指标。META 被下游 11 处循环共用，过滤一次即可全局生效
+    # （逐题表列头、指标条、两轮一致性、分诊表都跟着变，不会漏改）。
+    _shown = {x.strip() for x in a.metrics.split(",") if x.strip()}
+    META = [m for m in META if m[0] in _shown]
+    if not META:
+        raise SystemExit("--metrics 一个有效指标都没有")
 
     rounds = [("第一轮", load(a.r1)), ("第二轮", load(a.r2))]
     rounds = [(n, d) for n, d in rounds if d]
@@ -169,8 +193,10 @@ def main():
     peak = is_peak(datetime.now())
     pin, pout = PRICE["peak" if peak else "offpeak"]
     cost_gen = tin / 1e6 * pin + tout / 1e6 * pout
-    # 判官：智谱赠送额度，费用 0；这里只统计调用次数
-    n_judge = sum(len(rows) for _n, rows in rounds) * len(META)
+    # 判官按平台额度计费，不折算人民币；这里只统计**实际成功**的判定次数。
+    # ★ 不能写 题数×6：本次统一口径只判了核心四项，乘 6 会虚报次数。
+    n_judge = sum(1 for _n, rows in rounds for r in rows
+                  for key, *_ in META if r["scores"].get(key) is not None)
     # embedding：检索侧 qwen3-vl-embedding（每题 1~2 次），answer_relevancy 用 text-embedding-v4
     n_emb = n_gen * 2 + n_q * len(rounds) * 2
     cost_emb = n_emb * 40 / 1e6 * 0.5  # 每次按 40 token 估，单价按 0.5 元/M token 估
@@ -318,6 +344,11 @@ def main():
 """
 
     # ---------- HTML ----------
+    judge_note_html = f"（{esc(a.judge_note)}）" if a.judge_note else ""
+    scope_note_html = (
+        '<div class="card" style="border-left:3px solid #d99a2b;background:#fffaf0;'
+        'font-size:13px;line-height:1.8"><b>口径说明</b><br>' + a.scope_note + '</div>'
+    ) if a.scope_note else ""
     bar_rows = []
     for key, label, thr, direction, _ in META:
         m = summary[key]
@@ -422,7 +453,7 @@ def main():
     HTML = f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Chiron-AI · RAGAS 六指标评估</title>
+<title>{esc(a.title)}</title>
 <style>
 :root{{--bg:#f6f7f9;--card:#fff;--ink:#15181d;--dim:#6b7280;--line:#e5e7eb;
 --good:#12855a;--bad:#c0392b;--near:#b8860b;--accent:#2563eb}}
@@ -486,17 +517,17 @@ code{{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12px}}
 @media(max-width:760px){{.brow{{grid-template-columns:120px 1fr 70px}}.detail{{grid-template-columns:1fr}}}}
 </style></head><body><div class="wrap">
 <header>
-  <h1>Chiron-AI · RAGAS 六指标评估</h1>
-  <div class="sub">检索子图 {esc(a.corpus)} · 自纠正 RAG（检索 → 逐块打分 → 改写 → 再检索）</div>
+  <h1>{esc(a.title)}</h1>
+  <div class="sub">检索子图 {esc(a.corpus)} · {esc(a.pipeline)}</div>
   <div class="kv">
     <div>题量 <b>{n_q}</b> 题 × <b>{len(rounds)}</b> 轮</div>
     <div>回答模型 <b>{esc(a.model)}</b></div>
-    <div>判官 <b>{esc(a.judge)}</b>（另一家族，避免自评偏差）</div>
-    <div>topK <b>{esc(a.topk)}</b></div>
+    <div>判官 <b>{esc(a.judge)}</b>{judge_note_html}</div>
+    <div>topK / 合并阈值 <b>{esc(a.topk)}</b> / <b>{esc(a.merge)}</b></div>
     <div>生成时间 <b>{ts}</b></div>
   </div>
 </header>
-
+{scope_note_html}
 <h2>一、结论</h2>
 <div class="card"><ol class="concl">{''.join(f'<li>{c}</li>' for c in concl)}</ol></div>
 
@@ -505,14 +536,14 @@ code{{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12px}}
 <div class="dim" style="font-size:12px;margin-top:10px">竖线 = 目标值；圆点 = 各轮均值（{len(rounds)} 轮）。灰色条为趋势项，不设门槛。</div>
 </div>
 
-{before_after}<h2>四、分诊：把"答不出"拆成两类原因</h2>
+{before_after}<h2>四、分诊：低分题归因</h2>
 <div class="card">
 <table>
-<thead><tr><th>指标</th><th>全量 {n_q} 题</th><th>剔除 4 题后（{n_q - len(excluded)} 题）</th><th>差值</th></tr></thead>
+<thead><tr><th>指标</th><th>全量 {n_q} 题</th><th>剔除 {len(excluded)} 题后（{n_q - len(excluded)} 题）</th><th>差值</th></tr></thead>
 <tbody>{cohort_rows or '<tr><td colspan="4" class="dim">未指定分诊题号</td></tr>'}</tbody></table>
 <div class="dim" style="font-size:12px;margin:10px 0 14px">
-剔除的 {len(excluded)} 题按<b>失效环节</b>归类，<b>不同环节要分开处理，不能混成一个均值</b>。剔除以后的数字是
-"这些环节都不出错时"的读数，用来判断链路本身行不行；它<b>不是</b>对外报的数，只作定位用。</div>
+被剔除的题目按<b>失效环节</b>归类；下面的证据逐题列明。剔除后的读数是"这些环节都不出错时"的链路基线，
+用来判断检索本身行不行，<b>不是</b>对外报的数，只作定位用。</div>
 <table>
 <thead><tr><th>#</th><th>类型</th><th>问题</th><th>证据</th></tr></thead>
 <tbody>{diag_rows}</tbody></table>
@@ -538,7 +569,8 @@ code{{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12px}}
 <h2>七、应拒答题（单独统计，不进上面均值）</h2>
 <div class="card">{rrows if rrows else '<div class="dim">本次未跑拒答题</div>'}
 <div class="dim" style="font-size:12px;margin-top:8px">
-判定规则：回答中出现「知识库中没有相关资料 / 无法基于检索结果回答」即算如实拒答。
+判定规则：回答中出现「没有相关资料 / 知识库中未 / 无法依据检索结果回答」等多类标志词之一即算如实拒答
+（用 <code>is_refusal()</code> 多标志词匹配，单一短语会漏判）。
 这类题不能进 RAGAS 均值——`context_recall` 对“本文档未涉及”恒无意义，`faithfulness` 会因“回答里没有主张”虚高。</div>
 {f'<div style="margin-top:12px;padding:10px 12px;background:#f0f7ff;border:1px solid #d6e4ff;border-radius:8px;font-size:13px"><b>门控复测</b>：另用完整链路（<code>rag_llm=on</code>，含逐块打分与二次门控）跑同一批题，系统自身的 <code>no_answer</code> 判定触发 <b>{gate_hit}/{len(gate_rows)}</b>，单题耗时 7~11 秒。也就是说门控机制本身有效——上面这些“如实拒答”不是模型临场发挥，而是两条路都能兜住。</div>' if gate_rows else ''}
 </div>
@@ -547,25 +579,24 @@ code{{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12px}}
 <div class="card">
 <div class="cost">
   <div class="cbox"><div class="n">¥ {cost_gen:.3f}</div><div class="t">回答生成（{n_gen} 次）<br>入 {tin:,} / 出 {tout:,} token</div></div>
-  <div class="cbox"><div class="n">¥ 0</div><div class="t">判官（{n_judge} 次判定）<br>智谱免费额度内</div></div>
+  <div class="cbox"><div class="n">{esc(a.judge_cost)}</div><div class="t">判官（{n_judge} 次成功判定）<br>{esc(a.judge_cost_note)}</div></div>
   <div class="cbox"><div class="n">&lt; ¥ 0.01</div><div class="t">embedding（约 {n_emb} 次）<br>估算，量级可忽略</div></div>
-  <div class="cbox"><div class="n">¥ {cost_gen:.3f}</div><div class="t">合计（{'高峰时段' if peak else '空闲时段'}计价）</div></div>
+  <div class="cbox"><div class="n">¥ {cost_gen:.3f}</div><div class="t">合计（{'高峰时段' if peak else '空闲时段'}计价）<br>不含判官额度</div></div>
 </div>
 <div class="dim" style="font-size:12px;margin-top:12px">
 估算依据：生成单价按交接文档实测口径 —— <code>{esc(a.model)}</code> 工作日 9:00-12:00 / 14:00-18:00 为
 输入 2 元/M、输出 8 元/M；其余时段半价（输入 1 元/M、输出 4 元/M）。本次运行时间点判定为
 <b>{'高峰' if peak else '空闲'}</b>，按 {pin:g} / {pout:g} 元/M 计。token 数取自接口返回的 usage 累加，不是估算。
-判官走智谱赠送额度，实际扣费 0；embedding 按每次约 40 token、0.5 元/M 粗估，量级在 0.001 元以下。
+{esc(a.judge_cost_detail)}；embedding 按每次约 40 token、0.5 元/M 粗估，量级在 0.001 元以下。
 </div>
 </div>
 
 <footer>
-<b>口径</b>：被测系统为 Chiron-AI 的 RAG 子图（LangGraph 自纠正链），Milvus 向量库，embedding 为
-<code>qwen3-vl-embedding</code>（1536 维），知识库范围 <code>u1_a2</code>（仅 {esc(a.corpus)}）。<br>
+<b>口径</b>：被测系统为 Chiron-AI 的 RAG 子图（LangGraph），Milvus 向量库，知识库范围
+<code>{esc(a.scope)}</code>（{esc(a.corpus)}）；判分侧相关性用 <code>{esc(a.embedding)}</code>。<br>
 取数方式：<code>run_rag_graph</code> 拿<b>完整正文</b>作上下文（不用 120 字的 text_head），
 再把上下文按项目自己的 <code>format_knowledge_retrieval_tool_output</code> 拼给回答模型，保证上下文与回答同源。<br>
-<b>局限</b>：① 题目由章节结构出题、答案按 MySQL 语义组织，但作者仍是助手，需人工复核；
-② 单份教科书语料的结论不外推到异构文档；③ 实体召回与噪声敏感度在中文语料下不可靠，未作门槛。
+<b>局限</b>：{esc(a.limits)}
 </footer>
 </div>
 <script>
@@ -582,7 +613,7 @@ document.querySelectorAll('.qrow').forEach(function(tr){{
     open(a.out, "w", encoding="utf-8", newline="\n").write(HTML)
     print(f"已生成 {a.out}（{len(HTML)} 字符）")
     print(f"成本：生成 ¥{cost_gen:.3f}（入 {tin} / 出 {tout} token，{'高峰' if peak else '空闲'}价）"
-          f"  判官 0 元（{n_judge} 次）  embedding <¥0.01")
+          f"  判官 {a.judge_cost}（{n_judge} 次）  embedding <¥0.01")
     print(f"结论：核心四项达标 {len(core_ok)}/4  拒答 {refuse_ok}/{len(refuse_rows) if refuse_rows else 0}")
 
 
