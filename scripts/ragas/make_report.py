@@ -99,6 +99,11 @@ def main():
     ap.add_argument("--limits", default="题目由助手编写、需人工复核；实体召回与噪声敏感度在中文语料下不可靠，未作门槛")
     ap.add_argument("--topk", default="5")
     ap.add_argument("--merge", default="2", help="父块合并阈值，页头展示用")
+    ap.add_argument("--mixed", action="store_true",
+                    help="混口径模式：指标来自不同判官，结论不做整体达标判定")
+    ap.add_argument("--metric-sources", default="", help="逐项标注判官，格式 key=判官名,key=判官名")
+    ap.add_argument("--borrowed-metrics", default="",
+                    help="第二轮复用了第一轮判定的指标（逗号分隔）：不算两轮差，避免把 0 读成极稳定")
     ap.add_argument("--baseline1", default="", help="改前第一轮判分结果（用于前后对比）")
     ap.add_argument("--baseline2", default="", help="改前第二轮判分结果")
     ap.add_argument("--change-note", default="", help="这次改了什么，显示在对比块标题里")
@@ -138,6 +143,17 @@ def main():
             "diff": round(abs(means[0] - means[1]), 4) if len(means) == 2 and None not in means else None,
             "pass_n": (sum(1 for v in vals_all if v >= thr) if thr and direction == "high" else None),
         }
+
+    # 混口径：逐项判官来源 + 复用项不计算两轮差
+    sources = {}
+    for item in a.metric_sources.split(","):
+        if "=" in item:
+            k, v = item.split("=", 1)
+            sources[k.strip()] = v.strip()
+    borrowed = {x.strip() for x in a.borrowed_metrics.split(",") if x.strip()}
+    for k in borrowed:
+        if k in summary:
+            summary[k]["diff"] = None  # 复用不是独立采样，差 0 会被误读成"极稳定"
 
     per_q = []
     for base in rounds[0][1]:
@@ -226,12 +242,20 @@ def main():
             refuse_ok += 1
 
     concl = []
-    concl.append(
-        f"<b>核心四项达标 {len(core_ok)}/4</b>"
-        + ("（" + "、".join(summary[k]["label"] for k in CORE if k in core_ok) + "）"
-           if core_ok else "")
-        + ("；未达标：" + "、".join(summary[k]["label"] for k in CORE if k not in core_ok) if len(core_ok) < 4 else "")
-    )
+    if a.mixed:
+        concl.append(
+            f"<b>这是混口径报告，不能作整体达标结论</b>：四项分别由不同判官判定"
+            f"（来源见每项指标条下方）。按各自门槛看有 {len(core_ok)} 项达到数值线，"
+            "但这四个数<b>不能相加、不能平均、不能跨判官比较</b>——换判官等于换尺子，"
+            "实测同一批数据不同判官可差 0.05~0.10。"
+        )
+    else:
+        concl.append(
+            f"<b>核心四项达标 {len(core_ok)}/4</b>"
+            + ("（" + "、".join(summary[k]["label"] for k in CORE if k in core_ok) + "）"
+               if core_ok else "")
+            + ("；未达标：" + "、".join(summary[k]["label"] for k in CORE if k not in core_ok) if len(core_ok) < 4 else "")
+        )
     # 未达标项逐条给出"差多少"
     short = [(summary[k]["label"], summary[k]["mean"], summary[k]["thr"])
              for k in ("faithfulness", "answer_relevancy", "context_precision", "context_recall")
@@ -240,7 +264,7 @@ def main():
         concl.append(
             "<b>差在哪、差多少</b>：" +
             "；".join(f"{l} {m:.3f}（门槛 {t:.2f}，还差 {t-m:.3f}）" for l, m, t in short)
-            + "。注意相关性最弱，它测的是“回答像不像在正面回答问题”，与检索无关。"
+            + "。相关性测的是「回答像不像在正面回答问题」，与检索质量不是一回事。"
         )
     cprec = summary["context_precision"]
     if cprec["mean"] is not None and cprec["median"] is not None and cprec["median"] - cprec["mean"] > 0.08:
@@ -249,7 +273,14 @@ def main():
             f"{cprec['pass_n']}/{n_q * len(rounds)} 次判定达标。这说明是<b>少数几道题</b>在拖，"
             "不是整体检索不行——先定位到题，别急着调参数。"
         )
-    if unstable:
+    if a.mixed and borrowed:
+        concl.append(
+            "<b>两轮差只在同判官、同指标内才有意义</b>；"
+            + "、".join(summary[k]["label"] for k in borrowed if k in summary)
+            + " 的第二轮复用了第一轮判定（非独立采样），已不计算差值，"
+              "不要把它的 0 读成「极稳定」。"
+        )
+    elif unstable:
         concl.append("<b>两轮差异超阈值的指标</b>：" + "、".join(f"{l}（差 {d:.3f}）" for l, d in unstable)
                       + "。")
     else:
@@ -265,16 +296,16 @@ def main():
     if excluded:
         cl = {c["label"]: c["clean"] for c in cohort}
         concl.append(
-            "<b>剔除那 %d 题后的读数</b>（诊断用，不对外）：忠实度 %.3f、回答相关性 %.3f、"
-            "上下文精度 %.3f、上下文召回 %.3f。也就是说检索链路本身没有崩，"
-            "拖低均值的是那几道题，而不是整体不行。" % (
+            "<b>剔除那 %d 题后的读数</b>（诊断用，不对外报）：忠实度 %.3f、回答相关性 %.3f、"
+            "上下文精度 %.3f、上下文召回 %.3f。数字只用于定位，是否算「整体不行」要看逐题明细，"
+            "这里不预设立场。" % (
                 len(excluded), cl.get("忠实度") or 0, cl.get("回答相关性") or 0,
                 cl.get("上下文精度") or 0, cl.get("上下文召回") or 0)
         )
     if refuse_rows:
         concl.append(
             f"<b>该拒答时确实拒了 {refuse_ok}/{len(refuse_rows)}</b>："
-            + ("全部如实说明“知识库中没有相关资料”，并进一步说明检索实际命中了什么，没有一道编造。"
+            + ("全部如实说明知识库中缺少依据，没有一道编造。"
                if refuse_ok == len(refuse_rows) else "有题目在无相关资料时仍给出了内容，需要单独看。")
         )
     if worst:
@@ -363,9 +394,14 @@ def main():
             f'<span class="dot" style="left:{max(0.8, min(99.2, v*100)):.1f}%" title="{n} {v:.3f}"></span>'
             for (n, _d), v in zip(rounds, m["rounds"]) if v is not None
         ) if len(rounds) == 2 else ""
+        desc_txt = m["desc"]
+        if key in sources:
+            desc_txt = f"判官 {sources[key]} · " + desc_txt
+        if key in borrowed:
+            desc_txt = "R2 复用 R1（非独立采样） · " + desc_txt
         bar_rows.append(f"""
         <div class="brow">
-          <div class="blab">{esc(label)}<span class="bdesc">{esc(m['desc'])}</span></div>
+          <div class="blab">{esc(label)}<span class="bdesc">{esc(desc_txt)}</span></div>
           <div class="btrack">
             <div class="bfill {cls}" style="width:{w:.1f}%"></div>
             {f'<div class="btgt" style="left:{tgt:.1f}%"></div>' if tgt else ''}
@@ -378,12 +414,13 @@ def main():
     round_rows = ""
     for key, label, thr, direction, _ in META:
         m = summary[key]
+        lbl = label + ("（R2 复用 R1）" if key in borrowed else "")
         cells = "".join(f"<td class='mono'>{('%.3f' % v) if v is not None else '—'}</td>" for v in m["rounds"])
         d = m["diff"]
         dcls = "" if d is None else ("ok" if d <= 0.03 else "no")
         dstr = "—" if d is None else f"{d:.3f}"
         pass_col = f"{m['pass_n']}/{n_q*len(rounds)}" if m["pass_n"] is not None else "—"
-        round_rows += (f"<tr><td>{esc(label)}</td>{cells}"
+        round_rows += (f"<tr><td>{esc(lbl)}</td>{cells}"
                        f"<td class='mono {dcls}'>{dstr}</td><td class='mono'>{pass_col}</td></tr>")
 
     qrows = ""
@@ -614,7 +651,8 @@ document.querySelectorAll('.qrow').forEach(function(tr){{
     print(f"已生成 {a.out}（{len(HTML)} 字符）")
     print(f"成本：生成 ¥{cost_gen:.3f}（入 {tin} / 出 {tout} token，{'高峰' if peak else '空闲'}价）"
           f"  判官 {a.judge_cost}（{n_judge} 次）  embedding <¥0.01")
-    print(f"结论：核心四项达标 {len(core_ok)}/4  拒答 {refuse_ok}/{len(refuse_rows) if refuse_rows else 0}")
+    verdict = "混口径，不作整体达标判定" if a.mixed else f"核心四项达标 {len(core_ok)}/4"
+    print(f"结论：{verdict}  拒答 {refuse_ok}/{len(refuse_rows) if refuse_rows else 0}")
 
 
 if __name__ == "__main__":
