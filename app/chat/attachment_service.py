@@ -110,6 +110,8 @@ def purge_attachments_for_session(user_id: int, agent_id: int, session_id: str) 
     finally:
         db.close()
     obs.delete_prefix(_session_key_prefix(user_id, agent_id, session_id))
+    # 对象存储删了，工作区里的镜像也要一起清，否则会话删了文件还在磁盘上
+    _purge_workspace_mirror(user_id, agent_id, session_id)
 
 
 def purge_attachments_for_agent(user_id: int, agent_id: int) -> None:
@@ -124,6 +126,8 @@ def purge_attachments_for_agent(user_id: int, agent_id: int) -> None:
     finally:
         db.close()
     obs.delete_prefix(_agent_key_prefix(user_id, agent_id))
+    # 同上：智能体下所有会话的镜像一起清
+    _purge_workspace_mirror(user_id, agent_id)
 
 
 def get_attachment_row(
@@ -337,8 +341,53 @@ def save_uploaded_file(
     finally:
         db.close()
 
+    # 同步一份到会话工作区，让「传个 CSV 让 agent 直接分析」成立（U10 P1-D）。
+    # 落盘失败/超配额都不影响上传本身——它是增强能力，不是主流程。
+    _mirror_to_workspace(
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        filename=name,
+        raw=raw,
+    )
+
     return {"id": aid, "filename": name, "kind": kind, "mime": mime, "size_bytes": size}
 
+
+def _mirror_to_workspace(*, user_id: int, agent_id: int, session_id: str, filename: str, raw: bytes) -> None:
+    """附件写进工作区（延迟导入：`app.workspace` 与 chat 层没有硬依赖关系）。
+
+    这里再包一层 try 是刻意的双保险：`sync_attachment_to_workspace` 内部已经吞掉异常，
+    但导入失败（例如 workspace 被裁掉）也会抛，不能让它把上传拖下水。
+    """
+    try:
+        from app.workspace.attachment_sync import sync_attachment_to_workspace
+
+        sync_attachment_to_workspace(
+            user_id=user_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            filename=filename,
+            raw=raw,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _purge_workspace_mirror(user_id: int, agent_id: int, session_id: str | None = None) -> None:
+    """清理工作区里的附件镜像（会话级或智能体级），同样不影响主流程。"""
+    try:
+        from app.workspace.attachment_sync import (
+            purge_workspace_attachments,
+            purge_workspace_attachments_for_agent,
+        )
+
+        if session_id is None:
+            purge_workspace_attachments_for_agent(user_id, agent_id)
+        else:
+            purge_workspace_attachments(user_id, agent_id, session_id)
+    except Exception:  # noqa: BLE001
+        pass
 
 def format_attachment_hint(user_id: int, agent_id: int, session_id: str) -> str:
     """
@@ -356,7 +405,21 @@ def format_attachment_hint(user_id: int, agent_id: int, session_id: str) -> str:
         lines.append(
             f"- attachment_id={it['id']} 文件名={it['filename']} 类型={it['kind']} 大小={it['size_bytes']} 字节"
         )
+    # 只有在镜像里**真有文件**时才说「可以直接读」——写死这句话会在
+    # 「工作区没启用」或「落盘因配额被跳过」时变成假话（注入提示必须由内容决定）
+    mirror_hint = _workspace_mirror_hint(user_id, agent_id, session_id)
+    if mirror_hint:
+        lines.append(mirror_hint)
     return "\n".join(lines)
+
+
+def _workspace_mirror_hint(user_id: int, agent_id: int, session_id: str) -> str:
+    try:
+        from app.workspace.attachment_sync import attachment_mirror_hint
+
+        return attachment_mirror_hint(user_id, agent_id, session_id)
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def build_storable_human_content(
