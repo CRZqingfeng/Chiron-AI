@@ -97,16 +97,18 @@ class ToolCountTests(_Base):
     数字会随工具增减而变，变更时必须同步改这里——这是刻意的：
     数量断言的意义是「让新增工具必须被显式确认」，而不是「永远等于某个魔数」。
     U7 加了 search_long_term_memory，各档位 +1（12→13 / 9→10 / 13→14）。
-    U10 P0-A 加了 workspace_edit_file，带工作区的档位再 +1（13→14 / 14→15）；
+    U10 P0 加了 workspace_edit_file / grep / glob，带工作区的档位 +3（13→16 / 14→17）；
     无工作区档位不变（10）。
     """
 
     def test_default_with_workspace(self):
         names = self.names()
-        self.assertEqual(len(names), 14)
+        self.assertEqual(len(names), 16)
         self.assertIn("search_long_term_memory", names)
         self.assertIn("workspace_write_file", names)
         self.assertIn("workspace_edit_file", names)
+        self.assertIn("workspace_grep", names)
+        self.assertIn("workspace_glob", names)
         # 没有 interrupt_on 时不注册执行命令工具（安全约束）
         self.assertNotIn("workspace_run_command", names)
 
@@ -117,7 +119,7 @@ class ToolCountTests(_Base):
 
     def test_with_approval_registers_exec(self):
         names = self.names(interrupt_on={"workspace_run_command": True})
-        self.assertEqual(len(names), 15)
+        self.assertEqual(len(names), 17)
         self.assertIn("workspace_run_command", names)
 
     def test_web_disabled(self):

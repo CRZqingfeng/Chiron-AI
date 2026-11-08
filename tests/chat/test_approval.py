@@ -82,6 +82,8 @@ class ExecToolGatingTests(unittest.TestCase):
             names,
             {
                 "workspace_edit_file",
+                "workspace_glob",
+                "workspace_grep",
                 "workspace_list_dir",
                 "workspace_read_file",
                 "workspace_write_file",
@@ -91,7 +93,7 @@ class ExecToolGatingTests(unittest.TestCase):
     def test_exec_registered_when_explicitly_allowed(self):
         names = {t.name for t in make_workspace_tools(self.ws, include_exec=True)}
         self.assertIn("workspace_run_command", names)
-        self.assertEqual(len(names), 5)
+        self.assertEqual(len(names), 7)
 
     def test_exec_tool_returns_formatted_result(self):
         tool = next(t for t in make_workspace_tools(self.ws, include_exec=True) if t.name == "workspace_run_command")

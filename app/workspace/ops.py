@@ -1,9 +1,9 @@
-"""工作区文件操作原语：精确编辑（后续还有内容检索、路径匹配）。
+"""工作区文件操作原语：精确编辑、内容检索、路径匹配。
 
 **为什么单独一个模块，而不是继续往 `BaseWorkspace` 上堆方法**
 
 `BaseWorkspace` 是**存储抽象**（读/写/列目录/执行），这里放的是**操作策略**
-（按行匹配、跳过规则、裁剪窗口）。两者混在一起会让抽象方法从 5 个涨到 8 个，
+（匹配规则、跳过规则、裁剪窗口）。两者混在一起会让抽象方法从 5 个涨到 8 个，
 将来加新后端（S3 / 远端主机）必须把策略也实现一遍。
 
 本模块只吃一个 `root: Path`，因此 local 与 docker 后端共用——后者继承前者，
@@ -16,8 +16,12 @@
 
 from __future__ import annotations
 
+import fnmatch
+import os
+import re
+import time
 from pathlib import Path
-from typing import TypedDict
+from typing import Iterator, TypedDict
 
 from app.workspace.base import WorkspaceError, safe_resolve
 
@@ -216,10 +220,337 @@ def edit_text(
     )
 
 
+# --- 检索：grep / glob ----------------------------------------------------
+
+# 目录剪枝。用 `os.walk` 而不是 `Path.rglob` 就是为了能剪枝——
+# rglob 会把 node_modules 和 .git 一起扫完，深目录能直接扫到超时。
+SKIP_DIRS = frozenset({
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".idea",
+    ".vscode",
+    ".next",
+})
+
+# 一次调用的扫描上限：模型不该能把 CPU 占满，用户也不该等太久
+MAX_SCAN_FILES = 2000
+GREP_TIME_BUDGET_SECONDS = 5.0
+MAX_SCAN_FILE_BYTES = 2 * 1024 * 1024
+MAX_GLOB_MATCHES = 200
+
+# 单行展示上限：压缩的 JSON / 单行日志整行返回毫无意义，
+# 而且匹配点落在行尾时简单截断会把它切掉——必须按匹配点居中开窗
+GREP_LINE_CHAR_LIMIT = 300
+
+# 用来判断「用户可能想写正则」的元字符。命中时在无结果的情况下给提示，
+# 把「静默不命中」变成「可恢复的错误」。
+_REGEX_METACHARS = frozenset("^$*+?()[]{}|\\")
+
+
+class GrepHit(TypedDict):
+    path: str
+    line: int
+    text: str
+
+
+class GrepOutcome(TypedDict, total=False):
+    ok: bool
+    code: str
+    mode: str
+    hits: list[GrepHit]
+    # 保序的 (文件, 命中数)，不用 dict 是因为要保持确定性输出
+    counts: list[tuple[str, int]]
+    files: list[str]
+    total_matches: int
+    scanned_files: int
+    skipped_binary: int
+    skipped_large: int
+    truncated: bool
+    truncated_reason: str
+    # 无结果且 pattern 含正则元字符时为 True，提示模型换 regex=True
+    regex_hint: bool
+    note: str
+
+
+class GlobOutcome(TypedDict, total=False):
+    ok: bool
+    code: str
+    items: list[dict]
+    truncated: bool
+    note: str
+
+
+def _rel_posix(root: Path, target: Path) -> str:
+    try:
+        return target.relative_to(root).as_posix()
+    except ValueError:
+        return target.as_posix()
+
+
+def _iter_files(base: Path) -> Iterator[Path]:
+    """按确定顺序遍历，顺便剪掉 `.git` / `node_modules` 这类目录。
+
+    排序是刻意的：`os.walk` 的顺序依赖文件系统，同一份工作区两次调用可能不同，
+    结果不稳定会让「模型上次明明搜到了」变成玄学。
+    """
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
+        for name in sorted(filenames):
+            yield Path(dirpath) / name
+
+
+def _match_glob(rel_path: str, pattern: str) -> bool:
+    """`glob` 参数的过滤语义。
+
+    含 `/` 的模式按相对路径匹配，否则只比文件名——后者是模型最常用的写法
+    （`*.py`），按整路径匹配会让它一个都搜不到，而它并不知道自己错了。
+    """
+    if "/" in pattern:
+        return fnmatch.fnmatch(rel_path, pattern)
+    return fnmatch.fnmatch(rel_path.rsplit("/", 1)[-1], pattern)
+
+
+def _clip_line(line: str, pos: int) -> str:
+    """超长行以匹配点为中心开窗。"""
+    line = line.rstrip()
+    if len(line) <= GREP_LINE_CHAR_LIMIT:
+        return line
+    half = GREP_LINE_CHAR_LIMIT // 2
+    start = max(0, pos - half)
+    end = start + GREP_LINE_CHAR_LIMIT
+    if end > len(line):
+        end = len(line)
+        start = max(0, end - GREP_LINE_CHAR_LIMIT)
+    piece = line[start:end]
+    if start > 0:
+        piece = "…" + piece
+    if end < len(line):
+        piece = piece + "…"
+    return piece
+
+
+def grep_files(
+    root: Path,
+    pattern: str,
+    *,
+    path: str = ".",
+    glob: str | None = None,
+    regex: bool = False,
+    mode: str = "content",
+    head_limit: int = 50,
+) -> GrepOutcome:
+    """在工作区里按内容搜索。
+
+    **默认字面匹配而不是正则**：模型写错 `(`、`[`、`$` 是高频事故，而且会
+    *静默不命中*——比报错更糟，它会以为文件里没有，然后换别的方法乱试。
+    需要正则时显式传 `regex=True`；忘记传但又写了元字符时会得到提示。
+    """
+    if mode not in ("content", "files_with_matches", "count"):
+        return GrepOutcome(ok=False, code="bad_mode")
+    if not pattern:
+        return GrepOutcome(ok=False, code="empty_pattern")
+
+    try:
+        base = safe_resolve(root, path or ".")
+    except WorkspaceError as e:
+        return GrepOutcome(ok=False, code="bad_path", note=str(e))
+    if not base.exists():
+        return GrepOutcome(ok=False, code="no_path")
+
+    compiled: re.Pattern[str] | None = None
+    if regex:
+        try:
+            compiled = re.compile(pattern)
+        except re.error as e:
+            return GrepOutcome(ok=False, code="bad_regex", note=str(e))
+
+    limit = max(1, int(head_limit))
+    started = time.monotonic()
+    hits: list[GrepHit] = []
+    counts: list[tuple[str, int]] = []
+    matched_files: list[str] = []
+    total = 0
+    scanned = 0
+    skipped_binary = 0
+    skipped_large = 0
+    truncated = False
+    truncated_reason = ""
+
+    candidates: Iterator[Path] = iter([base]) if base.is_file() else _iter_files(base)
+
+    for fp in candidates:
+        if scanned >= MAX_SCAN_FILES:
+            truncated, truncated_reason = True, f"已达扫描上限 {MAX_SCAN_FILES} 个文件"
+            break
+        if time.monotonic() - started > GREP_TIME_BUDGET_SECONDS:
+            truncated, truncated_reason = True, f"已达时间预算 {GREP_TIME_BUDGET_SECONDS:g}s"
+            break
+
+        rel = _rel_posix(root, fp)
+        if glob and not _match_glob(rel, glob):
+            continue
+
+        try:
+            if fp.stat().st_size > MAX_SCAN_FILE_BYTES:
+                skipped_large += 1
+                continue
+            raw = fp.read_bytes()
+        except OSError:
+            # 权限或竞态：跳过，不能让一个读不了的文件毁掉整次搜索
+            continue
+
+        if is_binary(raw):
+            skipped_binary += 1
+            continue
+
+        scanned += 1
+        text = raw.decode("utf-8", errors="replace")
+        file_hits = 0
+
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if compiled is not None:
+                m = compiled.search(line)
+                if m is None:
+                    continue
+                pos = m.start()
+            else:
+                pos = line.find(pattern)
+                if pos < 0:
+                    continue
+
+            file_hits += 1
+            total += 1
+
+            if mode == "content":
+                if len(hits) < limit:
+                    hits.append(GrepHit(path=rel, line=line_no, text=_clip_line(line, pos)))
+                else:
+                    truncated, truncated_reason = True, f"仅显示前 {limit} 条"
+                    break
+            elif mode == "files_with_matches":
+                break
+
+        if file_hits:
+            if mode == "files_with_matches":
+                matched_files.append(rel)
+                if len(matched_files) >= limit:
+                    truncated, truncated_reason = True, f"仅显示前 {limit} 个文件"
+                    break
+            elif mode == "count":
+                counts.append((rel, file_hits))
+
+        if mode == "content" and len(hits) >= limit:
+            # 命中条目已满，但 total 是「至少这么多」，如实标注 truncated
+            truncated, truncated_reason = True, f"仅显示前 {limit} 条"
+            break
+
+    has_result = bool(hits or matched_files or counts)
+    return GrepOutcome(
+        ok=True,
+        mode=mode,
+        hits=hits,
+        counts=counts,
+        files=matched_files,
+        total_matches=total,
+        scanned_files=scanned,
+        skipped_binary=skipped_binary,
+        skipped_large=skipped_large,
+        truncated=truncated,
+        truncated_reason=truncated_reason,
+        regex_hint=(not has_result and not regex and bool(_REGEX_METACHARS & set(pattern))),
+    )
+
+
+def glob_files(
+    root: Path,
+    pattern: str,
+    *,
+    path: str = ".",
+    limit: int = MAX_GLOB_MATCHES,
+) -> GlobOutcome:
+    """按名字模式列出文件（支持 `**`、`*`、`?`、`[abc]`）。"""
+    if not pattern:
+        return GlobOutcome(ok=False, code="empty_pattern")
+    if pattern.startswith(("/", "\\")) or ".." in Path(pattern).parts:
+        return GlobOutcome(ok=False, code="bad_pattern", note="模式不能是绝对路径或包含 ..")
+
+    try:
+        base = safe_resolve(root, path or ".")
+    except WorkspaceError as e:
+        return GlobOutcome(ok=False, code="bad_path", note=str(e))
+    if not base.exists():
+        return GlobOutcome(ok=False, code="no_path")
+    if not base.is_dir():
+        return GlobOutcome(ok=False, code="not_dir")
+
+    root_resolved = root.resolve()
+    items: list[dict] = []
+    truncated = False
+    # 收集上限：`**` 在超大目录树里能匹配上万条，先多收一点再排序截断，
+    # 避免为了「排序正确」把整棵树都拿进内存
+    collect_cap = max(limit * 5, 1000)
+
+    try:
+        for p in base.glob(pattern):
+            if len(items) >= collect_cap:
+                truncated = True
+                break
+            rel = _rel_posix(root, p)
+            parts = Path(rel).parts
+            # `Path.glob` 会钻进 .git / node_modules，且无法剪枝，只能后过滤
+            if any(part in SKIP_DIRS or part.startswith(".") for part in parts[:-1]):
+                continue
+            try:
+                resolved = p.resolve()
+            except OSError:
+                continue
+            if not resolved.is_relative_to(root_resolved):
+                # 软链指向工作区外：不列出来，也不要去 stat 它
+                continue
+            try:
+                stat = p.stat()
+            except OSError:
+                continue
+            items.append(
+                {
+                    "path": rel,
+                    "is_dir": p.is_dir(),
+                    "size": int(stat.st_size),
+                    "mtime": float(stat.st_mtime),
+                }
+            )
+    except (ValueError, OSError) as e:
+        return GlobOutcome(ok=False, code="bad_pattern", note=str(e))
+
+    items.sort(key=lambda it: it["path"])
+    if len(items) > limit:
+        items = items[:limit]
+        truncated = True
+
+    return GlobOutcome(ok=True, items=items, truncated=truncated)
+
+
 __all__ = [
     "MAX_EDIT_BYTES",
+    "MAX_GLOB_MATCHES",
     "EditOutcome",
+    "GrepHit",
+    "GrepOutcome",
+    "GlobOutcome",
+    "SKIP_DIRS",
     "detect_newline",
     "edit_text",
+    "glob_files",
+    "grep_files",
     "is_binary",
 ]

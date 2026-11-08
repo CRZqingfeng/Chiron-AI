@@ -24,16 +24,17 @@ class WorkspaceToolsTests(unittest.TestCase):
 
     # --- 注册面 -----------------------------------------------------------
 
-    def test_exactly_four_tools_registered(self):
-        """U10 P0-A 加了 `workspace_edit_file`，所以是四个。
+    def test_exactly_six_tools_registered(self):
+        """六个：list / read / write / edit / grep / glob。
 
-        `grep`/`glob` 在 P0-B 加进来后会变成六个——届时这条断言要跟着改，
-        这是刻意的：工具面发生变化必须有人看一眼。
+        数量断言是刻意写的护栏——工具面变化必须有人看一眼，而不是悄悄多出来。
         """
         self.assertEqual(
             sorted(self.tools),
             [
                 "workspace_edit_file",
+                "workspace_glob",
+                "workspace_grep",
                 "workspace_list_dir",
                 "workspace_read_file",
                 "workspace_write_file",
@@ -162,6 +163,29 @@ class WorkspaceToolsTests(unittest.TestCase):
         self.assertIn("2 处匹配", out)
         self.assertIn("第 1、3 行", out)
         self.assertIn("replace_all", out)
+
+    # --- grep / glob：只读工具 ---------------------------------------------
+
+    def test_grep_returns_paths_and_lines(self):
+        self.tools["workspace_write_file"].invoke({"path": "a.py", "content": "x = 1\nfoo = 2\n"})
+        self.tools["workspace_write_file"].invoke({"path": "b.txt", "content": "foo\n"})
+        out = self.tools["workspace_grep"].invoke({"pattern": "foo"})
+        self.assertIn("a.py:2:", out)
+        self.assertIn("b.txt:1:", out)
+
+    def test_grep_hints_regex_when_metachars_and_no_hit(self):
+        """静默不命中比报错更糟：模型会以为文件里没有，然后换方法乱试。"""
+        self.tools["workspace_write_file"].invoke({"path": "a.py", "content": "x = 1\n"})
+        out = self.tools["workspace_grep"].invoke({"pattern": "foo|bar"})
+        self.assertIn("没有找到", out)
+        self.assertIn("regex=True", out)
+
+    def test_glob_lists_files(self):
+        self.tools["workspace_write_file"].invoke({"path": "src/a.py", "content": "x"})
+        self.tools["workspace_write_file"].invoke({"path": "src/b.md", "content": "y"})
+        out = self.tools["workspace_glob"].invoke({"pattern": "**/*.py"})
+        self.assertIn("src/a.py", out)
+        self.assertNotIn("b.md", out)
 
 
 if __name__ == "__main__":
