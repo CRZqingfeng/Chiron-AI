@@ -16,6 +16,7 @@ from typing import Any
 from langchain_core.tools import tool
 
 from app.workspace.base import BaseWorkspace, WorkspaceError
+from app.workspace.ops import EditOutcome, edit_text
 
 # 单次列目录返回的条目上限：工作区被写满时，一次 list 也不该把上下文打爆
 MAX_LIST_ENTRIES = 200
@@ -27,6 +28,69 @@ def _fmt_size(size: int) -> str:
     if size < 1024 * 1024:
         return f"{size / 1024:.1f}KB"
     return f"{size / 1024 / 1024:.1f}MB"
+
+
+def _format_edit_error(path: str, out: EditOutcome) -> str:
+    """把 `edit_text` 的失败码翻译成**可执行的中文建议**。
+
+    为什么每条都带下一步动作：只说「未找到」模型会原地重试同一个参数，
+    说「先用 read_file 确认原文」它才会换策略。错误文案是 ACI 的一部分。
+    """
+    code = out.get("code", "")
+    if code == "bad_path":
+        return f"错误：{out.get('note') or '路径不合法'}。"
+    if code == "no_file":
+        return f"错误：文件不存在：{path}。先用 workspace_list_dir 确认路径。"
+    if code == "is_dir":
+        return f"错误：{path} 是目录，请用 workspace_list_dir。"
+    if code == "too_large":
+        size_mb = int(out.get("note") or 0) / 1024 / 1024
+        return f"错误：文件过大（{size_mb:.1f}MB），edit_file 仅支持 2MB 以内的文本文件。"
+    if code == "not_text":
+        return f"错误：{path} 不是 UTF-8 文本文件，无法编辑。"
+    if code == "empty_old":
+        return "错误：old_string 不能为空。"
+    if code == "same":
+        return "错误：old_string 与 new_string 相同，无需修改。"
+    if code == "unsafe_replace_all":
+        return "错误：replace_all=True 时 old_string 不能是纯空白。"
+    if code == "write_failed":
+        return f"错误：写入失败（{out.get('note') or '未知原因'}），工作区可能只读或磁盘已满。"
+    if code == "not_found":
+        return (
+            f"错误：未找到匹配内容（文件共 {out.get('total_lines', 0)} 行）。"
+            "请先用 workspace_read_file 读取原文，逐字复制要替换的片段（含缩进与空行）。"
+        )
+    if code == "ambiguous":
+        lines = out.get("match_lines") or []
+        shown = "、".join(str(n) for n in lines[:5])
+        more = " 等" if len(lines) > 5 else ""
+        return (
+            f"错误：找到 {out.get('occurrences', 0)} 处匹配（第 {shown}{more} 行）。"
+            "请提供更长的上下文使其唯一，或传 replace_all=True 全部替换。"
+        )
+    return f"错误：编辑失败（{code}）。"
+
+
+def _format_edit_ok(path: str, out: EditOutcome) -> str:
+    occurrences = out.get("occurrences", 1)
+    first_line = out.get("first_line", 1)
+    total_lines = out.get("total_lines", 0)
+    newline = out.get("newline", "LF")
+    before = out.get("before") or []
+    after = out.get("after") or []
+
+    head = f"已修改 {path}：第 {first_line} 行（{occurrences} 处，文件共 {total_lines} 行，行尾 {newline}）"
+    note = out.get("note") or ""
+    if note:
+        head += f"\n（{note}）"
+
+    width = max([len(str(n)) for n, _ in before + after] or [1])
+    parts = [head, "--- 改动前 ---"]
+    parts.extend(f"{n:>{width}} | {text}" for n, text in before)
+    parts.append("--- 改动后 ---")
+    parts.extend(f"{n:>{width}} | {text}" for n, text in after)
+    return "\n".join(parts)
 
 
 def make_workspace_tools(ws: BaseWorkspace, *, include_exec: bool = False) -> list[Any]:
@@ -100,7 +164,37 @@ def make_workspace_tools(ws: BaseWorkspace, *, include_exec: bool = False) -> li
             return f"错误：{e}"
         return f"已写入 {path}（{_fmt_size(n)}）。"
 
-    tools: list[Any] = [workspace_list_dir, workspace_read_file, workspace_write_file]
+    @tool
+    def workspace_edit_file(
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> str:
+        """精确修改工作区文件里的一小段内容（只替换 old_string，不重写全文）。
+
+        何时使用：文件已存在、只想改动其中几行时。**改现有文件优先用它**，不要用
+        workspace_write_file 重写全文——重写长文件容易漏内容，漏掉的部分还不会报错。
+        何时不要使用：新建文件用 workspace_write_file；不知道原文长什么样时，
+        先用 workspace_read_file 读一遍，再从中复制片段。
+        path：相对工作区根目录的路径，如 "notes/a.md"；不要传绝对路径。
+        old_string：要替换的原文片段，必须与文件中逐字一致（含缩进与空行），
+                    默认必须在文件里唯一出现；不唯一时请带上更多上下文使其唯一。
+        new_string：替换后的内容，不能与 old_string 相同。
+        replace_all：为 True 时替换全部匹配（默认 False，要求唯一匹配）。
+        """
+        out = edit_text(
+            ws.root_path,
+            path or "",
+            old_string or "",
+            new_string or "",
+            replace_all=bool(replace_all),
+        )
+        if out.get("ok"):
+            return _format_edit_ok(path or "", out)
+        return _format_edit_error(path or "", out)
+
+    tools: list[Any] = [workspace_list_dir, workspace_read_file, workspace_write_file, workspace_edit_file]
 
     if include_exec:
 

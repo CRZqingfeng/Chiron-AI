@@ -128,3 +128,16 @@ class BaseWorkspace(ABC):
     @abstractmethod
     def cleanup(self) -> None:
         """释放资源（停容器）。必须幂等，且不删除工作区文件——跨轮持久是本层目标之一。"""
+
+    @property
+    @abstractmethod
+    def root_path(self) -> Path:
+        """工作区根目录的绝对路径。
+
+        给 `app/workspace/ops.py` 的纯函数用（精确编辑 / 内容检索 / 路径匹配）。
+        那些操作需要自己遍历目录树、按行切分原文，而现有接口都不合适：
+        `list_dir` 只列一层，`read_text` 会追加截断提示从而污染内容。
+
+        暴露路径而不是把操作扁平化成抽象方法，是为了让「存储」与「策略」分开：
+        新增后端只需提供一个根目录，不必把匹配规则重写一遍。
+        """
