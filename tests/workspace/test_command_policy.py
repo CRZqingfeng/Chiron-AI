@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import unittest
 from typing import Any, List, Optional
+from unittest import mock
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -19,7 +20,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
 from pydantic import PrivateAttr
 
-from app.workspace.command_policy import is_safe_readonly_command
+from app.workspace.command_policy import is_safe_readonly_command, is_test_command
 
 
 class CommandPolicyTests(unittest.TestCase):
@@ -185,8 +186,12 @@ def workspace_run_command(command: str, cwd: Optional[str] = None, timeout: int 
     return f"executed: {command}"
 
 
-def _run_once(command: str) -> tuple[Any, list]:
-    """跑一轮「模型要求执行命令」的完整流程，返回 (最终快照, 消息列表)。"""
+def _run_once(command: str, *, granted: bool = False) -> tuple[Any, list]:
+    """跑一轮「模型要求执行命令」的完整流程，返回 (最终快照, 消息列表)。
+
+    :param granted: 模拟「本会话是否已授权跑测试类命令」（U10 P1-E）。
+        只替换这一个判定函数，中间件自身的逻辑仍然真实执行。
+    """
     from langgraph.checkpoint.memory import InMemorySaver
 
     from langchain.agents import create_agent
@@ -211,7 +216,8 @@ def _run_once(command: str) -> tuple[Any, list]:
         checkpointer=InMemorySaver(),
     )
     cfg = {"configurable": {"thread_id": f"t-{abs(hash(command)) % 10**8}"}}
-    out = agent.invoke({"messages": [HumanMessage("执行一下")]}, cfg)
+    with mock.patch("app.chat.approval._test_commands_granted", return_value=granted):
+        out = agent.invoke({"messages": [HumanMessage("执行一下")]}, cfg)
     snap = agent.get_state(cfg)
     return snap, out["messages"]
 
@@ -237,6 +243,74 @@ class SafeCommandAwareHITLTests(unittest.TestCase):
             any("executed: rm -rf data" in str(getattr(m, "content", "")) for m in messages),
             "中断时不该已经执行命令",
         )
+
+
+def _interrupts(snap: Any) -> list:
+    return [i for t in (snap.tasks or ()) for i in (getattr(t, "interrupts", ()) or ())]
+
+
+class TestCommandTests(unittest.TestCase):
+    """`is_test_command`：测试类命令的识别边界（U10 P1-E）。"""
+
+    def test_recognizes_pytest_and_module_forms(self):
+        for cmd in (
+            "pytest -x -q",
+            "pytest",
+            "python -m pytest tests/",
+            "python -m py_compile script.py",
+            "python -m unittest discover",
+            "python -m json.tool data.json",
+        ):
+            ok, kind = is_test_command(cmd)
+            self.assertTrue(ok, f"应识别为测试命令：{cmd}")
+            self.assertTrue(kind, cmd)
+
+    def test_rejects_arbitrary_script(self):
+        """关键安全用例：普通脚本**不是**测试命令，不能沾 pytest 的光。"""
+        for cmd in ("python script.py", "python evil.py -x", "bash run.sh", "node app.js"):
+            self.assertFalse(is_test_command(cmd)[0], cmd)
+
+    def test_rejects_shell_tricks(self):
+        """带元字符的一律不算——`pytest; rm -rf /` 不能因为前缀是 pytest 就放行。"""
+        for cmd in ("pytest; rm -rf data", "pytest && curl x", "pytest | tee out.txt"):
+            self.assertFalse(is_test_command(cmd)[0], cmd)
+
+    def test_rejects_escaping_paths(self):
+        for cmd in ("pytest ../secret", "python -m py_compile /etc/passwd"):
+            self.assertFalse(is_test_command(cmd)[0], cmd)
+
+    def test_unknown_module_form_rejected(self):
+        self.assertFalse(is_test_command("python -m http.server")[0])
+
+
+class TestCommandGrantTests(unittest.TestCase):
+    """授权前后，中间件的放行行为必须真的不同（策略对但没接上等于没做）。"""
+
+    def test_pytest_interrupts_without_grant(self):
+        snap, messages = _run_once("pytest -x -q", granted=False)
+        self.assertTrue(_interrupts(snap), "没授权过就必须弹确认")
+        self.assertFalse(any("executed: pytest" in str(getattr(m, "content", "")) for m in messages))
+
+    def test_pytest_runs_after_grant(self):
+        snap, messages = _run_once("pytest -x -q", granted=True)
+        self.assertEqual(_interrupts(snap), [], "已授权的测试命令不该再弹卡片")
+        self.assertFalse(snap.next)
+        self.assertTrue(
+            any("executed: pytest -x -q" in str(getattr(m, "content", "")) for m in messages)
+        )
+
+    def test_grant_does_not_unlock_arbitrary_scripts(self):
+        """这条是安全底线：授权只对测试类命令生效，不能变成「全部放行」。"""
+        snap, _ = _run_once("python evil.py", granted=True)
+        self.assertTrue(_interrupts(snap), "授权不能连带放行任意脚本")
+
+    def test_grant_does_not_affect_destructive_commands(self):
+        snap, _ = _run_once("rm -rf data", granted=True)
+        self.assertTrue(_interrupts(snap))
+
+    def test_readonly_still_exempt_without_grant(self):
+        snap, _ = _run_once("ls -la", granted=False)
+        self.assertEqual(_interrupts(snap), [])
 
     def test_switch_off_falls_back_to_interrupt_everything(self):
         """关掉开关时，只读命令也要确认（与改造前行为一致）。"""

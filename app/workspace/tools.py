@@ -435,12 +435,26 @@ def make_workspace_tools(ws: BaseWorkspace, *, include_exec: bool = False) -> li
             # 免确认时告知用户「为什么没弹卡片」：否则他会以为审批坏了。
             # 判定与中间件共用同一个函数，不会出现「工具说免确认、界面还在等确认」。
             try:
-                from app.core.turn_runtime import emit_rag_step
-                from app.workspace.command_policy import is_safe_readonly_command
+                from app.core.turn_runtime import emit_rag_step, get_session_scope
+                from app.workspace.command_grants import grant_test_commands, test_commands_granted
+                from app.workspace.command_policy import is_safe_readonly_command, is_test_command
 
-                _safe, _why = is_safe_readonly_command(command or "")
+                _cmd = (command or "").strip()
+                _safe, _why = is_safe_readonly_command(_cmd)
                 if _safe:
-                    emit_rag_step("🔓", "只读命令免确认", f"{(command or '').strip()[:100]}｜{_why}")
+                    emit_rag_step("🔓", "只读命令免确认", f"{_cmd[:100]}｜{_why}")
+                else:
+                    # 能走到这里说明审批已通过（或本来就不需要审批）。
+                    # 把「本会话允许跑测试」记下来，下次同类命令不再打断用户。
+                    _is_test, _kind = is_test_command(_cmd)
+                    if _is_test:
+                        _scope = get_session_scope()
+                        if not test_commands_granted(_scope) and grant_test_commands(_scope):
+                            emit_rag_step(
+                                "🔓",
+                                "测试命令本会话免确认",
+                                f"{_cmd[:100]}｜已批准一次（{_kind}），后续同类命令不再询问",
+                            )
             except Exception:  # noqa: BLE001 - 提示失败不影响执行
                 pass
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import re
 from typing import Any, Optional
 
 
@@ -37,6 +38,7 @@ class _RequestState:
         "approved_mcp_pending_id",
         "allow_knowledge_retrieval",
         "allow_web_search",
+        "session_scope",
     )
 
     def __init__(self) -> None:
@@ -54,6 +56,9 @@ class _RequestState:
         self.approved_mcp_pending_id: str | None = None
         self.allow_knowledge_retrieval = True
         self.allow_web_search = False
+        # 「用户×智能体×会话」标识。审批中间件靠它判断「本会话是否已授权跑测试」——
+        # 中间件只能拿到 state/runtime，而 `thread_id` 是 job_id 不是会话，拿不到这个。
+        self.session_scope: str | None = None
 
 
 _REQUEST_STATE: contextvars.ContextVar[_RequestState | None] = contextvars.ContextVar(
@@ -126,6 +131,30 @@ def reset_tool_call_guards() -> None:
     state.web_search_calls = 0
     state.web_image_search_calls = 0
     state.fetch_url_calls = 0
+
+
+def make_session_scope(user_id: int, agent_id: int, session_id: str) -> str:
+    """把「用户×智能体×会话」压成一个可放进 Redis key 的稳定标识。
+
+    三者都要：只用 session_id 不够——会话 id 由前端生成，不同用户之间可能撞名。
+    """
+    raw = f"u{int(user_id)}_a{int(agent_id)}_s{session_id or ''}"
+    return re.sub(r"[^A-Za-z0-9_-]", "_", raw)[:120]
+
+
+def set_session_scope(scope: str | None) -> None:
+    """记录本轮属于哪个会话。
+
+    为什么需要它：审批中间件（`app.chat.approval`）只能拿到 state / runtime，
+    而 `thread_id` 是 **job_id 不是 session_id**（`agent_service` 里
+    `thread_id = resume_thread_id or job_id`）。没有这个标识，
+    「本会话已授权跑测试」这类会话级判定就无处可查。
+    """
+    _state().session_scope = (scope or "").strip() or None
+
+
+def get_session_scope() -> str | None:
+    return _state().session_scope
 
 
 def set_turn_tool_policy(*, use_knowledge_retrieval: bool, use_web_search: bool) -> None:
