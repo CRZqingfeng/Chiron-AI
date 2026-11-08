@@ -12,6 +12,7 @@ from .roles import roles_router
 from .user_agents import (
     agent_chat_router,
     agent_memories_router,
+    agent_workspace_router,
     auth_router as user_agent_auth_router,
     user_agents_router,
 )
@@ -28,6 +29,7 @@ v1_router.include_router(user_agents_router, prefix="/user-agent", dependencies=
 v1_router.include_router(user_agent_auth_router, prefix="/user-agent", dependencies=[DependAuth])
 v1_router.include_router(agent_chat_router, prefix="/user-agent", dependencies=[DependAuth])
 v1_router.include_router(agent_memories_router, prefix="/user-agent", dependencies=[DependAuth])
+v1_router.include_router(agent_workspace_router, prefix="/user-agent", dependencies=[DependAuth])
 v1_router.include_router(user_agent_kb_router, prefix="/user-agent", dependencies=[DependAuth])
 v1_router.include_router(user_agent_mcp_router, prefix="/user-agent", dependencies=[DependAuth])
 v1_router.include_router(roles_router, prefix="/role", dependencies=[DependPermission])
