@@ -16,7 +16,14 @@ from typing import Any
 from langchain_core.tools import tool
 
 from app.workspace.base import BaseWorkspace, WorkspaceError
-from app.workspace.ops import EditOutcome, edit_text
+from app.workspace.ops import (
+    EditOutcome,
+    GlobOutcome,
+    GrepOutcome,
+    edit_text,
+    glob_files,
+    grep_files,
+)
 
 # 单次列目录返回的条目上限：工作区被写满时，一次 list 也不该把上下文打爆
 MAX_LIST_ENTRIES = 200
@@ -91,6 +98,96 @@ def _format_edit_ok(path: str, out: EditOutcome) -> str:
     parts.append("--- 改动后 ---")
     parts.extend(f"{n:>{width}} | {text}" for n, text in after)
     return "\n".join(parts)
+
+
+def _format_grep_result(pattern: str, out: GrepOutcome) -> str:
+    """把检索结果压成模型能一眼看懂的文本。"""
+    code = out.get("code", "")
+    if code == "bad_path":
+        return f"错误：{out.get('note') or '路径不合法'}。"
+    if code == "no_path":
+        return "错误：目录不存在，先用 workspace_list_dir 确认路径。"
+    if code == "bad_mode":
+        return "错误：mode 只能是 content / files_with_matches / count。"
+    if code == "empty_pattern":
+        return "错误：pattern 不能为空。"
+    if code == "bad_regex":
+        return f"错误：正则表达式无效（{out.get('note')}）。请修正或改用字面匹配。"
+
+    mode = out.get("mode", "content")
+    scanned = out.get("scanned_files", 0)
+    skipped_binary = out.get("skipped_binary", 0)
+    skipped_large = out.get("skipped_large", 0)
+    truncated = out.get("truncated", False)
+    reason = out.get("truncated_reason", "")
+
+    lines: list[str] = []
+
+    if mode == "content":
+        hits = out.get("hits") or []
+        if not hits:
+            lines.append(f'在工作区里没有找到 "{pattern}"（扫描了 {scanned} 个文件）。')
+        else:
+            files = len({h["path"] for h in hits})
+            lines.append(f'在 {files} 个文件里找到 {len(hits)} 处匹配 "{pattern}"：')
+            lines.extend(f'{h["path"]}:{h["line"]}: {h["text"]}' for h in hits)
+    elif mode == "files_with_matches":
+        files = out.get("files") or []
+        if not files:
+            lines.append(f'没有文件包含 "{pattern}"（扫描了 {scanned} 个文件）。')
+        else:
+            lines.append(f'{len(files)} 个文件包含 "{pattern}"：')
+            lines.extend(files)
+    else:  # count
+        counts = out.get("counts") or []
+        if not counts:
+            lines.append(f'没有文件包含 "{pattern}"（扫描了 {scanned} 个文件）。')
+        else:
+            total = sum(c for _, c in counts)
+            lines.append(f'{len(counts)} 个文件共命中 {total} 处：')
+            lines.extend(f"{path}: {c}" for path, c in counts)
+
+    if truncated and reason:
+        lines.append(f"（{reason}，结果不完整；可缩小 path 或加 glob 过滤）")
+
+    skipped: list[str] = []
+    if skipped_binary:
+        skipped.append(f"{skipped_binary} 个二进制文件")
+    if skipped_large:
+        skipped.append(f"{skipped_large} 个超过 2MB 的文件")
+    if skipped:
+        lines.append("（已跳过：" + "、".join(skipped) + "）")
+
+    if out.get("regex_hint"):
+        lines.append("提示：pattern 里含正则元字符，但当前是字面匹配。需要正则请传 regex=True。")
+
+    return "\n".join(lines)
+
+
+def _format_glob_result(pattern: str, out: GlobOutcome) -> str:
+    code = out.get("code", "")
+    if code == "bad_path":
+        return f"错误：{out.get('note') or '路径不合法'}。"
+    if code == "no_path":
+        return "错误：目录不存在，先用 workspace_list_dir 确认路径。"
+    if code == "not_dir":
+        return "错误：path 需要是目录。"
+    if code == "empty_pattern":
+        return "错误：pattern 不能为空。"
+    if code == "bad_pattern":
+        return f"错误：模式无效（{out.get('note') or '不支持绝对路径或 ..'}）。"
+
+    items = out.get("items") or []
+    if not items:
+        return f"没有匹配 {pattern} 的文件。"
+
+    lines = [f"匹配 {pattern} 共 {len(items)} 项："]
+    for it in items:
+        kind = "[目录]" if it["is_dir"] else f"({_fmt_size(it['size'])})"
+        lines.append(f"{it['path']}  {kind}")
+    if out.get("truncated"):
+        lines.append("（结果已截断，请缩小 pattern 或指定 path）")
+    return "\n".join(lines)
 
 
 def make_workspace_tools(ws: BaseWorkspace, *, include_exec: bool = False) -> list[Any]:
@@ -194,7 +291,65 @@ def make_workspace_tools(ws: BaseWorkspace, *, include_exec: bool = False) -> li
             return _format_edit_ok(path or "", out)
         return _format_edit_error(path or "", out)
 
-    tools: list[Any] = [workspace_list_dir, workspace_read_file, workspace_write_file, workspace_edit_file]
+    @tool
+    def workspace_grep(
+        pattern: str,
+        path: str = ".",
+        glob: str | None = None,
+        mode: str = "content",
+        regex: bool = False,
+        head_limit: int = 50,
+    ) -> str:
+        """在工作区文件内容里搜索，找出"哪个文件里有这段内容"。
+
+        何时使用：不确定某个字符串/函数名/配置项出现在哪个文件时。**不要**为了找它
+        逐个 workspace_read_file——那会烧掉大量上下文，还容易漏。
+        何时不要使用：找"文件名"匹配用 workspace_glob；已知路径时直接 read_file。
+        pattern：要搜索的文本。**默认按字面匹配，不是正则**——需要正则请传 regex=True。
+                 常用写法：函数名 "compute_total"、配置项 "TIMEOUT"、注释 "TODO"。
+        path：从哪个目录开始搜，默认工作区根目录。
+        glob：只搜文件名匹配该模式的文件，如 "*.py"、"src/**/*.ts"。
+        mode：content（带行号与内容）/ files_with_matches（只列文件）/ count（每个文件命中数）。
+        regex：为 True 时把 pattern 当正则表达式。
+        head_limit：最多返回多少条（默认 50）。
+        """
+        try:
+            limit = max(1, min(int(head_limit), 200))
+        except (TypeError, ValueError):
+            limit = 50
+        out = grep_files(
+            ws.root_path,
+            pattern or "",
+            path=path or ".",
+            glob=glob or None,
+            regex=bool(regex),
+            mode=(mode or "content"),
+            head_limit=limit,
+        )
+        return _format_grep_result(pattern or "", out)
+
+    @tool
+    def workspace_glob(pattern: str, path: str = ".") -> str:
+        """按文件名模式列出工作区里的文件（支持 `**` 递归）。
+
+        何时使用：不确定有哪些文件、或需要"所有 .py / 所有 test_*.md"这类清单时。
+        何时不要使用：找文件**内容**用 workspace_grep；只需知道某个目录里有什么用
+        workspace_list_dir（更省）。
+        pattern：glob 模式，如 "*.md"、"**/*.py"、"src/**/*.ts"。
+                 不能是绝对路径，也不能包含 ".."。
+        path：从哪个目录开始找，默认工作区根目录。
+        """
+        out = glob_files(ws.root_path, pattern or "", path=path or ".")
+        return _format_glob_result(pattern or "", out)
+
+    tools: list[Any] = [
+        workspace_list_dir,
+        workspace_read_file,
+        workspace_write_file,
+        workspace_edit_file,
+        workspace_grep,
+        workspace_glob,
+    ]
 
     if include_exec:
 

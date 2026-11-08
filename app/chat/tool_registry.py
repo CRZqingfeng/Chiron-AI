@@ -80,6 +80,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("workspace_read_file", "workspace", "app/workspace/tools.py"),
     ToolSpec("workspace_write_file", "workspace", "app/workspace/tools.py"),
     ToolSpec("workspace_edit_file", "workspace", "app/workspace/tools.py"),
+    ToolSpec("workspace_grep", "workspace", "app/workspace/tools.py"),
+    ToolSpec("workspace_glob", "workspace", "app/workspace/tools.py"),
     ToolSpec("workspace_run_command", "workspace", "app/workspace/tools.py"),
 )
 

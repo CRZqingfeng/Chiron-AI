@@ -19,7 +19,7 @@ import unittest
 from pathlib import Path
 
 from app.workspace.local import LocalWorkspace
-from app.workspace.ops import detect_newline, edit_text, is_binary
+from app.workspace.ops import detect_newline, edit_text, glob_files, grep_files, is_binary
 
 
 class EditTextTests(unittest.TestCase):
@@ -173,6 +173,162 @@ class OpsHelperTests(unittest.TestCase):
     def test_is_binary(self):
         self.assertTrue(is_binary(b"ab\x00cd"))
         self.assertFalse(is_binary("纯文本".encode()))
+
+
+class GrepTests(unittest.TestCase):
+    """内容检索：语义、跳过规则、截断与提示。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.ws = LocalWorkspace(Path(self._tmp.name))
+        self.root = self.ws.root
+        self._write("a.py", "def compute():\n    return foo\n")
+        self._write("b.py", "x = foo(1)\n")
+        self._write("notes.md", "TODO: foo 要改\n")
+        self._write("sub/deep/d.py", "# foo 在深目录\n")
+        # 这两处必须被跳过，否则「搜不到 = 没有」的判断就是错的
+        self._write(".git/config", "foo\n")
+        self._write("node_modules/m.js", "foo\n")
+        self._write("blob.bin", b"\x00foo")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write(self, name: str, content: str | bytes) -> None:
+        target = self.root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content.encode("utf-8") if isinstance(content, str) else content)
+
+    def test_literal_content_hits_with_line_numbers(self):
+        out = grep_files(self.root, "foo")
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["total_matches"], 4)
+        self.assertEqual(len(out["hits"]), 4)
+        self.assertIn(("a.py", 2), [(h["path"], h["line"]) for h in out["hits"]])
+        self.assertIn(("sub/deep/d.py", 1), [(h["path"], h["line"]) for h in out["hits"]])
+
+    def test_skips_git_node_modules_and_binary(self):
+        out = grep_files(self.root, "foo")
+        paths = [h["path"] for h in out["hits"]]
+        self.assertNotIn(".git/config", paths)
+        self.assertNotIn("node_modules/m.js", paths)
+        self.assertEqual(out["skipped_binary"], 1)
+
+    def test_literal_matches_regex_metachars_verbatim(self):
+        """`a(b` 按字面能搜到——默认不是正则，这是刻意的。"""
+        self._write("weird.txt", "call a(b here\n")
+        out = grep_files(self.root, "a(b")
+        self.assertTrue(out["ok"], out)
+        self.assertEqual([h["path"] for h in out["hits"]], ["weird.txt"])
+
+    def test_no_hit_with_metachars_sets_regex_hint(self):
+        out = grep_files(self.root, "foo|bar")
+        self.assertEqual(out["total_matches"], 0)
+        self.assertTrue(out["regex_hint"])
+
+    def test_regex_mode_works(self):
+        out = grep_files(self.root, "foo|TODO", regex=True)
+        self.assertTrue(out["ok"], out)
+        self.assertGreaterEqual(out["total_matches"], 4)
+
+    def test_bad_regex_reports_error(self):
+        out = grep_files(self.root, "a(b", regex=True)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["code"], "bad_regex")
+
+    def test_glob_filter(self):
+        """`glob` 是**文件过滤器**，`*.py` 匹配所有层级的 .py（不只当前目录）。"""
+        out = grep_files(self.root, "foo", glob="*.py")
+        self.assertEqual({h["path"] for h in out["hits"]}, {"a.py", "b.py", "sub/deep/d.py"})
+        # 带 `/` 的模式按相对路径匹配
+        nested = grep_files(self.root, "foo", glob="sub/**/*.py")
+        self.assertEqual({h["path"] for h in nested["hits"]}, {"sub/deep/d.py"})
+
+    def test_three_modes(self):
+        content = grep_files(self.root, "foo", mode="content")
+        files = grep_files(self.root, "foo", mode="files_with_matches")
+        counts = grep_files(self.root, "foo", mode="count")
+
+        self.assertEqual(len(content["hits"]), 4)
+        self.assertEqual(sorted(files["files"]), ["a.py", "b.py", "notes.md", "sub/deep/d.py"])
+        self.assertEqual(dict(counts["counts"])["a.py"], 1)
+
+    def test_head_limit_truncates(self):
+        out = grep_files(self.root, "foo", head_limit=1)
+        self.assertEqual(len(out["hits"]), 1)
+        self.assertTrue(out["truncated"])
+
+    def test_path_scope_limits_search(self):
+        out = grep_files(self.root, "foo", path="sub")
+        self.assertEqual([h["path"] for h in out["hits"]], ["sub/deep/d.py"])
+
+    def test_path_escape_rejected(self):
+        out = grep_files(self.root, "foo", path="../")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["code"], "bad_path")
+
+    def test_long_line_clipped_around_match(self):
+        """匹配点在行尾时不能被切掉——这是「居中开窗」而不是 `line[:300]` 的理由。"""
+        self._write("long.txt", "x" * 500 + "NEEDLE" + "y" * 500 + "\n")
+        out = grep_files(self.root, "NEEDLE")
+        text = out["hits"][0]["text"]
+        self.assertIn("NEEDLE", text)
+        self.assertLessEqual(len(text), 310)
+
+
+class GlobTests(unittest.TestCase):
+    """文件名匹配：递归、剪枝、限额、模式校验。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.ws = LocalWorkspace(Path(self._tmp.name))
+        self.root = self.ws.root
+        for name in ("a.py", "b.py", "readme.md", "src/util/c.py", ".git/hook.py", "node_modules/x/y.py"):
+            self._write(name, "x\n")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write(self, name: str, content: str) -> None:
+        target = self.root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+    def test_recursive_double_star(self):
+        out = glob_files(self.root, "**/*.py")
+        paths = [it["path"] for it in out["items"]]
+        self.assertIn("a.py", paths)
+        self.assertIn("src/util/c.py", paths)
+        # .git 与 node_modules 里的不能被列出来
+        self.assertNotIn(".git/hook.py", paths)
+        self.assertNotIn("node_modules/x/y.py", paths)
+
+    def test_single_level_pattern(self):
+        out = glob_files(self.root, "*.md")
+        self.assertEqual([it["path"] for it in out["items"]], ["readme.md"])
+
+    def test_no_match(self):
+        out = glob_files(self.root, "*.rs")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["items"], [])
+
+    def test_deterministic_order(self):
+        first = [it["path"] for it in glob_files(self.root, "**/*.py")["items"]]
+        second = [it["path"] for it in glob_files(self.root, "**/*.py")["items"]]
+        self.assertEqual(first, second)
+        self.assertEqual(first, sorted(first))
+
+    def test_limit_truncates(self):
+        out = glob_files(self.root, "**/*.py", limit=2)
+        self.assertEqual(len(out["items"]), 2)
+        self.assertTrue(out["truncated"])
+
+    def test_pattern_escape_rejected(self):
+        self.assertEqual(glob_files(self.root, "../*.py")["code"], "bad_pattern")
+        self.assertEqual(glob_files(self.root, "/etc/*")["code"], "bad_pattern")
+
+    def test_path_escape_rejected(self):
+        self.assertEqual(glob_files(self.root, "*.py", path="../")["code"], "bad_path")
 
 
 if __name__ == "__main__":
