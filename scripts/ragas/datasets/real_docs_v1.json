@@ -1,0 +1,119 @@
+{
+ "meta": {
+  "name": "ragas_real_docs_v1",
+  "kb_scope": "u1_a4",
+  "created": "2026-11-08",
+  "corpus": [
+   "fastapi_README.md",
+   "pydantic_README.md",
+   "uvicorn_README.md",
+   "rag_paper.pdf"
+  ],
+  "corpus_note": "全部为真实公开文档（GitHub 仓库 README + arXiv 论文 PDF），非自造。共 242 个 level-2 chunk / 约 22.4 万字符。",
+  "coverage": "FastAPI 4 题（依赖/安装/特性/标准）、Pydantic 1 题、Uvicorn 2 题、RAG 论文 3 题、跨文档 1 题；拒答 3 题对应 Docker/K8s/Gunicorn —— 三者在本库 0 命中",
+  "note": "第三组目的：验证前两组（教科书 PDF、自造异构语料）的结论能否外推到真实文档。真实文档的特点是 HTML 标签混在 Markdown 里、学术论文两栏排版、README 内容与模型记忆存在代差（例如 FastAPI 现在教 uv add 而不是 pip install）。"
+ },
+ "questions": [
+  {
+   "idx": 1,
+   "part": "A",
+   "section": "fastapi_README.md §Requirements",
+   "q": "FastAPI 的 Requirements 一节说它依赖哪两个库？分别负责哪部分？",
+   "reference": "FastAPI 依赖两个库：Starlette 负责 web 部分（web parts），Pydantic 负责数据部分（data parts）。原文的说法是 FastAPI stands on the shoulders of giants。"
+  },
+  {
+   "idx": 2,
+   "part": "A",
+   "section": "fastapi_README.md §Installation",
+   "q": "按这份 README，现在安装 FastAPI 的推荐命令是什么？",
+   "reference": "README 现在推荐先安装 uv（Astral 的包管理器），再用 uv add \"fastapi[standard]\" 把 FastAPI 加进项目，而不是直接 pip install fastapi。方括号里的 standard 表示安装带标准可选依赖的版本。"
+  },
+  {
+   "idx": 3,
+   "part": "A",
+   "section": "fastapi_README.md §The key features are",
+   "q": "FastAPI 声称能减少多少比例的人为 bug、提升多少开发速度？",
+   "reference": "README 的 key features 里写：Fast to code —— 开发功能的速度提升约 200% 到 300%；Fewer bugs —— 减少约 40% 由开发者人为引入的错误。这两项都注明是基于其内部开发团队构建生产应用的测试估算。"
+  },
+  {
+   "idx": 4,
+   "part": "A",
+   "section": "fastapi_README.md §Standards-based",
+   "q": "FastAPI 是基于哪些开放标准构建的？",
+   "reference": "FastAPI 基于并完全兼容两个 API 开放标准：OpenAPI（以前叫 Swagger）和 JSON Schema。"
+  },
+  {
+   "idx": 5,
+   "part": "A",
+   "section": "pydantic_README.md",
+   "q": "Pydantic 是做什么的？它的 V2 和 V1 是什么关系？",
+   "reference": "Pydantic 是用 Python 类型提示做数据校验的库（Data validation using Python type hints）。Pydantic V2 是一次彻底重写（ground-up rewrite），带来很多新特性和性能提升，同时也有一些破坏性变更（breaking changes）；V2 里内置了最新版的 V1，可以用 from pydantic import v1 as pydantic_v1 的方式在旧代码里增量升级。"
+  },
+  {
+   "idx": 6,
+   "part": "A",
+   "section": "uvicorn_README.md §Quickstart",
+   "q": "pip install uvicorn 和 pip install 'uvicorn[standard]' 装出来的东西有什么区别？",
+   "reference": "pip install uvicorn 只装最小的纯 Python 依赖；pip install 'uvicorn[standard]' 会额外装基于 Cython 的依赖（事件循环 uvloop、HTTP 协议处理 httptools）以及其他可选依赖：websockets 处理 WebSocket 协议、watchfiles 供开发模式 --reload 使用、python-dotenv 支持 --env-file、PyYAML 支持 --log-config 用 YAML 文件。"
+  },
+  {
+   "idx": 7,
+   "part": "A",
+   "section": "uvicorn_README.md §Intro",
+   "q": "Uvicorn 支持哪些协议？它解决的是什么问题？",
+   "reference": "Uvicorn 是一个 Python 的 ASGI web 服务器实现，目前支持 HTTP/1.1、HTTP/2 和 WebSockets。它解决的是 Python 长期缺少异步框架可用的低层服务器/应用接口的问题，ASGI 规范填补了这个空白，使跨异步框架的工具链成为可能。"
+  },
+  {
+   "idx": 8,
+   "part": "A",
+   "section": "rag_paper.pdf §Abstract / §2.2-2.3",
+   "q": "RAG 论文里的“参数内存”和“非参数内存”分别指什么？",
+   "reference": "参数内存（parametric memory）是预训练的 seq2seq 模型（论文用 BART-large）；非参数内存（non-parametric memory）是 Wikipedia 的稠密向量索引，通过预训练的神经检索器 DPR 访问。RAG 就是把这两者结合起来做语言生成。"
+  },
+  {
+   "idx": 9,
+   "part": "A",
+   "section": "rag_paper.pdf §2 Methods",
+   "q": "RAG-Sequence 和 RAG-Token 这两种形式有什么区别？",
+   "reference": "RAG-Sequence 在整个生成序列上使用同一批检索到的段落（condition on the same retrieved passages across the whole generated sequence）；RAG-Token 则允许每个目标 token 使用不同的检索段落。"
+  },
+  {
+   "idx": 10,
+   "part": "A",
+   "section": "rag_paper.pdf §2.2-2.3",
+   "q": "RAG 的检索器和生成器分别是什么？输入和检索到的内容怎么结合？",
+   "reference": "检索器基于 DPR，采用双编码器（bi-encoder）架构，文档编码器和查询编码器都基于 BERTbase，用最大内积搜索取 top-k 文档。生成器用 BART-large，约 400M 参数的预训练 seq2seq transformer。结合方式很直接：把输入 x 与检索到的内容 z 拼接（concatenate）后送进 BART。"
+  },
+  {
+   "idx": 11,
+   "part": "A",
+   "section": "跨文档：fastapi_README.md + pydantic_README.md + uvicorn_README.md",
+   "q": "FastAPI、Pydantic、Uvicorn 这三个组件在同一个技术栈里各承担什么角色？",
+   "reference": "FastAPI 是 web 框架本身，它站在两个库的肩膀上——用 Starlette 处理 web 部分、用 Pydantic 处理数据部分（Pydantic 负责用类型提示做数据校验）；Uvicorn 是 Python 的 ASGI web 服务器，负责真正把 ASGI 应用跑起来并处理 HTTP/1.1、HTTP/2 与 WebSocket 连接。"
+  },
+  {
+   "idx": 12,
+   "part": "B",
+   "section": "（本库未涉及：Docker）",
+   "q": "怎么构建 FastAPI 的官方 Docker 镜像？",
+   "reference": "本知识库只包含 FastAPI、Pydantic、Uvicorn 的 README 与一篇 RAG 论文，没有 Docker 相关内容。正确做法是如实说明知识库中没有 Docker 镜像构建的资料，而不是凭外部知识编造步骤。",
+   "expect": "refuse"
+  },
+  {
+   "idx": 13,
+   "part": "B",
+   "section": "（本库未涉及：Kubernetes）",
+   "q": "在 Kubernetes 上部署 Uvicorn 需要注意哪些配置？",
+   "reference": "本知识库没有 Kubernetes 相关内容（全库 0 命中）。应如实说明未涉及，不要编造探针、资源限制、HPA 之类的配置细节。",
+   "expect": "refuse"
+  },
+  {
+   "idx": 14,
+   "part": "B",
+   "section": "（本库未涉及：Gunicorn）",
+   "q": "怎样用 Gunicorn 管理多个 Uvicorn worker 进程？",
+   "reference": "本知识库没有 Gunicorn 相关内容（全库 0 命中）。虽然这在实践中是常见组合，但文档未涉及，应如实说明无法基于检索结果回答。",
+   "expect": "refuse"
+  }
+ ]
+}
