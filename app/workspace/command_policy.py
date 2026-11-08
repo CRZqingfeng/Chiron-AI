@@ -156,3 +156,56 @@ def describe_decision(command: str) -> str:
     """给日志/思考区用的一句话结论。"""
     ok, reason = is_safe_readonly_command(command)
     return f"免确认（只读：{reason}）" if ok else f"需确认（{reason}）"
+
+
+# --- 测试类命令（准只读）--------------------------------------------------
+
+# 测试 / 静态校验的调用前缀。
+#
+# **为什么不并进只读白名单**：pytest 会加载 `conftest.py`，而那是模型自己可写的文件——
+# 一旦把 pytest 当成只读免审批，`写 conftest.py` + `pytest` 就成了绕过
+# `python script.py` 审批的通道。所以它必须挂在「本会话已授权」这个前置条件下，
+# 由 `app.chat.approval` 统一判定。
+_TEST_INVOCATIONS: tuple[tuple[str, ...], ...] = (
+    ("pytest",),
+    ("py.test",),
+    ("python", "-m", "pytest"),
+    ("python3", "-m", "pytest"),
+    ("python", "-m", "py_compile"),
+    ("python3", "-m", "py_compile"),
+    ("python", "-m", "unittest"),
+    ("python3", "-m", "unittest"),
+    ("python", "-m", "json.tool"),
+    ("python3", "-m", "json.tool"),
+)
+
+
+def is_test_command(command: str) -> tuple[bool, str]:
+    """判断是否「测试 / 静态校验」类命令。
+
+    这类命令**不是**可证明只读：pytest 会写 `.pytest_cache`、`__pycache__`。
+    但它的风险比任意脚本低得多，值得在用户批准一次之后复用。
+
+    :return: `(True, "命中的调用形式")` 或 `(False, "原因")`
+    """
+    raw = (command or "").strip()
+    if not raw or len(raw) > 300:
+        return False, "命令为空或过长"
+    if any(c in _FORBIDDEN_CHARS for c in raw):
+        return False, "含元字符"
+    try:
+        tokens = shlex.split(raw, posix=True)
+    except ValueError as e:
+        return False, f"命令无法解析：{e}"
+    if not tokens:
+        return False, "命令为空"
+
+    for prefix in _TEST_INVOCATIONS:
+        if tuple(tokens[: len(prefix)]) != prefix:
+            continue
+        # 路径参数不能跳出工作区；`-` 开头的是选项，跳过
+        for tok in tokens[len(prefix) :]:
+            if not tok.startswith("-") and _looks_like_escape(tok):
+                return False, f"参数疑似越界：{tok}"
+        return True, " ".join(prefix)
+    return False, "不是测试类命令"

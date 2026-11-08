@@ -32,9 +32,11 @@ from app.chat.storage import storage
 from app.core.turn_runtime import (
     get_last_rag_context,
     get_pending_mcp_confirmations,
+    make_session_scope,
     reset_tool_call_guards,
     set_approved_mcp_pending_id,
     set_rag_step_queue,
+    set_session_scope,
     set_turn_tool_policy,
 )
 from app.chat.web_search_tool import (
@@ -1563,6 +1565,9 @@ async def iter_chat_stream_events(
     get_last_rag_context(clear=True)
     reset_tool_call_guards()
     set_turn_tool_policy(use_knowledge_retrieval=use_knowledge_retrieval, use_web_search=use_web_search)
+    # 会话标识：审批中间件靠它判断「本会话是否已授权跑测试类命令」。
+    # 中间件拿不到 session（thread_id 是 job_id），只能从这里取。
+    set_session_scope(make_session_scope(user_id, agent_id, session_id))
     set_approved_mcp_pending_id(mcp_approved_pending_id)
 
     # ① resume 入参校验
