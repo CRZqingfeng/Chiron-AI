@@ -82,15 +82,39 @@ def safe_resolve(root: Path, user_path: str) -> Path:
     return target
 
 
-def truncate_text(text: str, limit: int) -> tuple[str, bool]:
-    """按字符数截断并返回 (文本, 是否发生截断)。
+# 截断时保留的头部比例：动作/摘要通常在开头，但**错误在最后几行**，
+# 所以必须给尾部留足空间（0.6/0.4 是刻意偏头，但不至于把末尾吃掉）
+_TRUNCATION_HEAD_RATIO = 0.6
 
-    用字符而不是字节做单位：模型按 token 计费，字符数与 token 数的关系更稳定，
+
+def truncate_text(text: str, limit: int) -> tuple[str, bool]:
+    """按字符数截断，**保留头尾**并省略中间。
+
+    为什么不能只保头：命令输出里「动作在开头、错误在最后几行，中间才是噪音」。
+    只保头会把 pytest 的失败摘要、编译器的 error 行整段切掉——那是模型唯一的反馈信号，
+    切没了它只能瞎猜。
+
+    上游 LangChain Deep Agents 的 `truncate_if_too_long` 恰恰是**只保头**的
+    （20000 token × 4 = 8 万字符，`result[:limit]` + 尾注），所以这条指望不上「照抄框架」。
+
+    单位用字符而不是字节：模型按 token 计费，字符数与 token 数的关系更稳定，
     而字节数会被中文（3 字节/字）严重高估。
     """
     if limit <= 0 or len(text) <= limit:
         return text, False
-    return text[:limit] + f"\n...[输出已截断，共 {len(text)} 字符，仅显示前 {limit} 字符]", True
+
+    head = int(limit * _TRUNCATION_HEAD_RATIO)
+    tail = limit - head
+    # 尾部至少留一整行：只剩半行时模型读到的错误信息是残句，比没有更误导
+    tail = max(tail, min(len(text) - head, 200))
+    head = min(head, len(text) - tail)
+    omitted = len(text) - head - tail
+
+    marker = (
+        f"\n...[输出已截断：省略中间 {omitted} 字符，"
+        f"保留开头 {head} 与结尾 {tail}，全文 {len(text)} 字符]\n"
+    )
+    return text[:head] + marker + text[-tail:], True
 
 
 class BaseWorkspace(ABC):

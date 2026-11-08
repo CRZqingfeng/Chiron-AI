@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.workspace.base import PathEscapeError, WorkspaceError, safe_resolve
+from app.workspace.base import PathEscapeError, WorkspaceError, safe_resolve, truncate_text
 from app.workspace.local import LocalWorkspace
 
 
@@ -201,6 +201,44 @@ class LocalWorkspaceExecTests(unittest.TestCase):
         """cwd 锁定在工作区：命令产生的文件应落在工作区内。"""
         self.ws.execute("echo hello > out.txt")
         self.assertTrue((self.root / "out.txt").exists())
+
+
+class TruncateTextTests(unittest.TestCase):
+    """截断必须保头尾（U10 P1-C）。
+
+    依据是 ACI 的基本判断：命令输出里**动作在开头、错误在最后几行，中间才是噪音**。
+    只保头会把 pytest 的失败摘要、编译器的 error 行整段切掉——那是模型唯一的反馈信号。
+    """
+
+    def test_keeps_tail_where_errors_live(self):
+        text = "START-MARK\n" + "x" * 5000 + "\nFAILED test_foo.py::test_bar - AssertionError"
+        out, truncated = truncate_text(text, 1000)
+        self.assertTrue(truncated)
+        self.assertIn("START-MARK", out, "开头要保住——动作与摘要在这里")
+        self.assertIn("AssertionError", out, "结尾要保住——错误在这里")
+        self.assertIn("输出已截断", out)
+
+    def test_reports_omitted_count(self):
+        out, _ = truncate_text("a" * 5000, 1000)
+        self.assertIn("省略中间", out)
+        self.assertIn("全文 5000 字符", out)
+
+    def test_short_text_untouched(self):
+        text = "short"
+        out, truncated = truncate_text(text, 1000)
+        self.assertFalse(truncated)
+        self.assertEqual(out, text)
+
+    def test_zero_limit_means_no_truncation(self):
+        text = "abc" * 1000
+        out, truncated = truncate_text(text, 0)
+        self.assertFalse(truncated)
+        self.assertEqual(out, text)
+
+    def test_result_not_much_longer_than_limit(self):
+        """尾注不能把结果撑爆：多出来的只应是那几十字说明。"""
+        out, _ = truncate_text("a" * 100_000, 1000)
+        self.assertLess(len(out), 1200)
 
 
 if __name__ == "__main__":
