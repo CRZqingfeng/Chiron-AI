@@ -659,7 +659,12 @@ def retrieve_documents(
     from app.kb.image_store import get_image_store
     image_store = get_image_store()
     
-    candidate_k = max(top_k * 3, top_k) # 候选文档数量
+    # ★ 候选池 = top_k × 倍数（默认 3，即 top_k=5 时 15 条）。倍数做成配置项是为了解决
+    #   "向量分偏低但内容正确的块进不了候选池"：表格被切成线性文本后 embedding 语义不完整，
+    #   排名靠后，rerank 再好也无从选择。调大等于宽召回 + 精排序，需同步调大
+    #   RERANK_MAX_CANDIDATES，否则候选会在送排前被按向量分截断。
+    _mult = max(1, int(getattr(settings, "KB_CANDIDATE_MULTIPLIER", 3) or 3))
+    candidate_k = max(top_k * _mult, top_k)  # 候选文档数量
     esc = milvus_escape(kb_scope) # 转义知识库范围
     
     # 支持检索文本块（L3）和图片块（L4）

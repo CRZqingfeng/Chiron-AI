@@ -18,6 +18,7 @@ import argparse
 import html
 import json
 import os
+import re
 import statistics as st
 from datetime import datetime
 
@@ -61,10 +62,15 @@ REFUSAL_MARKS = (
 def is_refusal(text: str) -> bool:
     """判断回答是否属于"如实拒答"。
 
-    ★ 不要用单一短语匹配：实测 #13 写的是"知识库**检索结果中**没有相关资料"，
-    按 "知识库中" 匹配会漏判，把 2/2 算成 1/2。这里用多标志词任一命中。
+    ★ 两个坑都踩过：
+    1. 不能用单一短语：实测 #13 写的是「知识库**检索结果中**没有相关资料」；
+    2. **必须先剥掉 Markdown 强调标记**：实测第三组 #13 写「知识库中**没有**关于…」，
+       `"知识库中没有" in text` 会返回 False —— 中间插了 `**` 就匹配不上，
+       结果把如实拒答误判成未拒答。
     """
     t = text or ""
+    t = re.sub(r"[*_`~]+", "", t)   # 去加粗/斜体/行内代码标记
+    t = re.sub(r"\s+", "", t)       # 去空白与换行
     return any(m in t for m in REFUSAL_MARKS)
 
 
@@ -324,6 +330,7 @@ def main():
         "gen": ("生成未综合", "上下文已含所需事实，回答没有归纳"),
         "image": ("图文无解", "答案只在图片像素里，纯文本通道拿不到"),
         "metric": ("指标口径问题", "回答以“没有资料”开头时 answer_relevancy 会系统性判低，非能力问题"),
+        "noise": ("HTML 噪音块", "README 的 logo / badge / sponsor 等纯 HTML 块占掉了上下文配额，无正文价值"),
     }
     for t, items in by_type.items():
         label, why = TYPE_SAY.get(t, (t, ""))

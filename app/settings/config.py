@@ -356,7 +356,9 @@ class Settings(BaseSettings):
     # 图片块是否以 base64 Data URI 参与多模态重排；False 时仅文本块参与
     RERANK_INCLUDE_IMAGES: bool = True
     # 单次送排文档数上限（含图片，控制成本与延迟）
-    RERANK_MAX_CANDIDATES: int = 30
+    # ★ 2026-11-08 由 30 提到 60：KB_CANDIDATE_MULTIPLIER 提到 10 后候选池为 50 条，
+    #   上限仍为 30 会在送排前被按向量分截断，等于宽召回白做。
+    RERANK_MAX_CANDIDATES: int = 60
     # 单张图片参与重排的体积上限（base64 编码前字节数），超限则该图不参与重排
     RERANK_MAX_IMAGE_BYTES: int = 4 * 1024 * 1024
 
@@ -376,6 +378,18 @@ class Settings(BaseSettings):
     #   注意语义：这是**总数上限**，其中 KB_MIN_IMAGE_SLOTS 个位置被图片保底占用，
     #   所以文本实际可用位 = KB_TOP_K - min(KB_MIN_IMAGE_SLOTS, 图片候选数)。
     KB_TOP_K: int = 5
+    # ★ 向量召回候选池 = KB_TOP_K * 本倍数，再由 rerank 从中挑最终 top_k。
+    #   原来硬编码 `top_k * 3`（top_k=5 → 只有 15 条候选），导致向量分偏低但内容正确的块
+    #   （典型：表格被切成线性的"约束 描述 关键字 非空约束…"）连候选池都进不去，
+    #   rerank 再好也无从选择 —— #17「MySQL 支持哪些约束」命中 p60 而非正文 p61 就是这个原因。
+    #   调大等于"宽召回 + 精排序"，代价是 rerank 单次送排的文档数变多。
+    #   ★ 2026-11-08 实测（第一组 23 题，只判 precision/recall，同一判官）：
+    #     倍数 3（候选 15）→ 精度 0.931 / 召回 0.903；倍数 10（候选 50）→ 0.964 / 0.974。
+    #     两项同时涨（topK 5→8 那次是拿精度换召回，与这次不同），代价是检索 2.9s→3.9s。
+    #     同期修好 #17：该题答案在 p61，向量分低进不了 15 条候选池，precision/recall 原来是
+    #     0.000/0.000，放宽后为 0.833/0.857。故默认值定为 10。
+    #   需同步确认 RERANK_MAX_CANDIDATES ≥ 本倍数 * KB_TOP_K，否则候选会被二次截断。
+    KB_CANDIDATE_MULTIPLIER: int = 10
     # 最终 top_k 中尽量保留至少 N 个图片块（有可用图片时；与纯文本按 score 争位）
     KB_MIN_IMAGE_SLOTS: int = 2
     # 为 True 时：在智能体每轮回复前，自动调用一次模型从知识库文档列表中圈选 file_key，再在该子集上检索
