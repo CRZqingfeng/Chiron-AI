@@ -101,6 +101,11 @@ class LocalWorkspace(BaseWorkspace):
 
     # --- 内部 -------------------------------------------------------------
 
+    @property
+    def root_path(self) -> Path:
+        """容器后端继承自本类，文件读写同在宿主侧的 `root` 下，故无需覆写。"""
+        return self.root
+
     def _resolve(self, path: str) -> Path:
         return safe_resolve(self.root, path)
 

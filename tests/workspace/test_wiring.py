@@ -75,10 +75,11 @@ class WorkspaceWiringTests(unittest.TestCase):
         names = set(self._captured_tools())
         self.assertEqual(names & WORKSPACE_TOOLS, set())
 
-    def test_workspace_adds_exactly_three_tools(self):
+    def test_workspace_adds_exactly_four_tools(self):
+        """U10 P0-A 后是四个（list/read/write/edit）。P0-B 会变成六个。"""
         with_ws = self._captured_tools(workspace=self.ws)
         without = self._captured_tools()
-        self.assertEqual(len(with_ws) - len(without), 3)
+        self.assertEqual(len(with_ws) - len(without), 4)
 
     def test_execute_is_not_exposed(self):
         """U5b（审批中断）落地之前，模型不得具备执行任意 shell 的能力。

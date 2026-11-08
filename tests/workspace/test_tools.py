@@ -24,10 +24,20 @@ class WorkspaceToolsTests(unittest.TestCase):
 
     # --- 注册面 -----------------------------------------------------------
 
-    def test_exactly_three_tools_registered(self):
+    def test_exactly_four_tools_registered(self):
+        """U10 P0-A 加了 `workspace_edit_file`，所以是四个。
+
+        `grep`/`glob` 在 P0-B 加进来后会变成六个——届时这条断言要跟着改，
+        这是刻意的：工具面发生变化必须有人看一眼。
+        """
         self.assertEqual(
             sorted(self.tools),
-            ["workspace_list_dir", "workspace_read_file", "workspace_write_file"],
+            [
+                "workspace_edit_file",
+                "workspace_list_dir",
+                "workspace_read_file",
+                "workspace_write_file",
+            ],
         )
 
     def test_execute_is_deliberately_not_exposed(self):
@@ -117,6 +127,41 @@ class WorkspaceToolsTests(unittest.TestCase):
         self.tools["workspace_write_file"].invoke({"path": "y.txt", "content": "hello"})
         out = self.tools["workspace_read_file"].func("y.txt", "abc")
         self.assertEqual(out, "hello")
+
+    # --- edit_file：返回形状是 ACI 的一部分 ---------------------------------
+
+    def test_edit_returns_diff_context(self):
+        """成功返回要带行号与改动前后各 3 行，模型才能自检而不用再读全文。"""
+        self.tools["workspace_write_file"].invoke(
+            {"path": "a.py", "content": "def f():\n    return 1\n\nprint(f())\n"}
+        )
+        out = self.tools["workspace_edit_file"].invoke(
+            {"path": "a.py", "old_string": "    return 1", "new_string": "    return 2"}
+        )
+        self.assertIn("已修改 a.py", out)
+        self.assertIn("第 2 行", out)
+        self.assertIn("改动前", out)
+        self.assertIn("改动后", out)
+        self.assertIn("|     return 2", out)
+        self.assertNotIn("|     return 1", out.split("改动后")[-1])
+
+    def test_edit_not_found_suggests_reading_first(self):
+        """只说「未找到」模型会原地重试；必须给出下一步动作。"""
+        self.tools["workspace_write_file"].invoke({"path": "a.txt", "content": "hello\n"})
+        out = self.tools["workspace_edit_file"].invoke(
+            {"path": "a.txt", "old_string": "missing", "new_string": "x"}
+        )
+        self.assertIn("未找到匹配内容", out)
+        self.assertIn("workspace_read_file", out)
+
+    def test_edit_ambiguous_lists_lines_and_mentions_replace_all(self):
+        self.tools["workspace_write_file"].invoke({"path": "a.txt", "content": "foo\nbar\nfoo\n"})
+        out = self.tools["workspace_edit_file"].invoke(
+            {"path": "a.txt", "old_string": "foo", "new_string": "baz"}
+        )
+        self.assertIn("2 处匹配", out)
+        self.assertIn("第 1、3 行", out)
+        self.assertIn("replace_all", out)
 
 
 if __name__ == "__main__":
