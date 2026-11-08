@@ -66,6 +66,12 @@
             <div class="agent-chat-toolbar">
               <div class="agent-chat-toolbar-fade"></div>
               <div class="agent-chat-toolbar-inner">
+                <n-button size="small" round quaternary @click="showWorkspace = true">
+                  <template #icon>
+                    <TheIcon icon="mdi:folder-text-outline" :size="18" />
+                  </template>
+                  {{ $t('views.agents.chat_button_files') }}
+                </n-button>
                 <n-button size="small" round quaternary @click="restartChat">
                   <template #icon>
                     <TheIcon icon="mdi:plus-circle-outline" :size="18" />
@@ -191,6 +197,13 @@
         </template>
       </n-spin>
     </div>
+
+    <!-- 产物抽屉：会话右侧，与记忆面板同一交互习惯（弹层，不改路由）-->
+    <AgentWorkspaceDrawer
+      v-model:show="showWorkspace"
+      :agent-id="agent?.id || 0"
+      :session-id="sessionId"
+    />
   </AppPage>
 </template>
 
@@ -203,6 +216,7 @@ import { NAvatar, NButton, NInput, NSpin, NSwitch, NTooltip, NUpload } from 'nai
 import AppPage from '@/components/page/AppPage.vue'
 import TheIcon from '@/components/icon/TheIcon.vue'
 import ChatMessageList from './ChatMessageList.vue'
+import AgentWorkspaceDrawer from './AgentWorkspaceDrawer.vue'
 import { useChatStickToBottom } from './useChatStickToBottom.js'
 import { useChatSession } from './useChatSession.js'
 import { useChatComposer, MAX_CHAT_ATTACHMENTS, chatAttachmentIcon } from './useChatComposer.js'
@@ -240,6 +254,7 @@ const messages = ref([])
 const inputText = ref('')
 const sending = ref(false)
 const confirmingMcpIds = ref(new Set())
+const showWorkspace = ref(false)
 const {
   sessionId,
   ignoreNextQueryWatch,

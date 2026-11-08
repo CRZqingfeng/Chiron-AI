@@ -115,6 +115,37 @@ export default {
       params: { agent_id },
     }),
   /**
+   * 会话工作区产物（U10 P0-C）。三个都是只读。
+   * 三级目录由后端用 token 里的 user_id 拼，前端只传 agent_id 与 session_id——
+   * 传 uid 既没必要，也会让越权防护失效。
+   */
+  listAgentWorkspaceFiles: ({ agent_id, session_id, path = '' }) =>
+    request.get('/user-agent/chat/workspace/files', { params: { agent_id, session_id, path } }),
+  previewAgentWorkspaceFile: ({ agent_id, session_id, path }) =>
+    request.get('/user-agent/chat/workspace/file', { params: { agent_id, session_id, path } }),
+  /**
+   * 下载用 fetch + token 头，与 `fetchChatAttachmentPreviewBlob` 同一套路子：
+   * axios 会把二进制当 JSON 解析，而且 `<a href>` 带不了请求头。
+   */
+  fetchAgentWorkspaceFileBlob: ({ agent_id, session_id, path }) => {
+    const base = import.meta.env.VITE_BASE_API || '/api/v1'
+    const q = new URLSearchParams({
+      agent_id: String(agent_id),
+      session_id: String(session_id || 'default_session'),
+      path: String(path || ''),
+    })
+    const headers = {}
+    const token = getToken()
+    if (token) headers.token = token
+    return fetch(`${base}/user-agent/chat/workspace/download?${q}`, {
+      credentials: 'include',
+      headers,
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(String(res.status))
+      return res.blob()
+    })
+  },
+  /**
    * 跨会话记忆（U7）。作用域是「用户 × 智能体」，所以两个接口都要 agent_id。
    * 只返回 status=active 的条目：superseded 是历史版本，给用户看没有意义。
    */
