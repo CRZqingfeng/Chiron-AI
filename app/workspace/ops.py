@@ -108,6 +108,44 @@ def _context_after(lines: list[str], line_no: int, count: int = _CONTEXT_LINES) 
     return [(n, lines[n - 1]) for n in range(line_no, end + 1)]
 
 
+def _find_all(haystack: str, needle: str) -> list[int]:
+    """收集所有不重叠的出现位置。"""
+    positions: list[int] = []
+    if not needle:
+        return positions
+    start = 0
+    while True:
+        hit = haystack.find(needle, start)
+        if hit < 0:
+            break
+        positions.append(hit)
+        start = hit + len(needle)
+    return positions
+
+
+# 匹配 read_file 输出里的行号栏，形如 `    12 | content`
+_LINE_PREFIX_RE = re.compile(r"^\s*\d+\s*\|\s?")
+
+
+def strip_line_number_prefix(text: str) -> str | None:
+    """把模型误带上的行号前缀剥掉；不像行号栏就返回 None。
+
+    为什么需要：`read_file` 的输出带行号（ACI 要求模型能引用行），但模型复制片段
+    去做 `edit_file` 时很容易把 `   87 | ` 一起带上——那是文件里根本不存在的字符，
+    匹配必然失败，而报错只会说「未找到」，模型不知道毛病出在自己多带了前缀。
+
+    只在**每一行**都符合 `数字 | ` 形状时才认为它是行号栏：表格类内容
+    （`  12 | 值`）也可能长成这样，所以剥离后仍匹配不上时调用方会回退原样。
+    """
+    if not text:
+        return None
+    rows = text.split("\n")
+    candidates = [r for r in rows if r.strip()]
+    if not candidates or not all(_LINE_PREFIX_RE.match(r) for r in candidates):
+        return None
+    return "\n".join(_LINE_PREFIX_RE.sub("", r) for r in rows)
+
+
 def edit_text(
     root: Path,
     path: str,
@@ -163,15 +201,18 @@ def edit_text(
     # 报给模型的行数应当与它 read_file 看到的一致
     total_lines = max(1, len(normalized.splitlines()))
 
-    positions: list[int] = []
-    start = 0
-    while True:
-        hit = normalized.find(old_n, start)
-        if hit < 0:
-            break
-        positions.append(hit)
-        # 从上一次命中之后再找，避免重叠导致的重复计数
-        start = hit + len(old_n)
+    positions = _find_all(normalized, old_n)
+
+    if not positions:
+        # 兜底：模型可能把 read_file 输出里的行号栏一起复制进来了。
+        # 剥一次再试，仍失败就按原样报「未找到」——绝不能因为剥离而误改别处。
+        alt_old = strip_line_number_prefix(old_n)
+        if alt_old and alt_old != old_n:
+            alt_positions = _find_all(normalized, alt_old)
+            if alt_positions:
+                old_n = alt_old
+                new_n = strip_line_number_prefix(new_n) or new_n
+                positions = alt_positions
 
     if not positions:
         return EditOutcome(ok=False, code="not_found", total_lines=total_lines)
@@ -217,6 +258,138 @@ def edit_text(
         before=_context_before(src_lines, first_line),
         after=_context_after(out_lines, first_line),
         note=note,
+    )
+
+
+# --- 读取：行级分页 -------------------------------------------------------
+
+# 读取上限比编辑宽松：读完不改，5MB 足够覆盖工作区里绝大多数文本产物
+MAX_READ_BYTES = 5 * 1024 * 1024
+MAX_READ_LINES = 5000
+# 行号栏宽度固定，模型对齐的行号更容易定位（宽度随文件变会让输出抖动）
+_GUTTER_WIDTH = 6
+
+
+class ReadWindow(TypedDict, total=False):
+    ok: bool
+    code: str
+    # (行号, 该行内容)，行号 1-based
+    lines: list[tuple[int, str]]
+    total_lines: int
+    start_line: int
+    end_line: int
+    has_more: bool
+    # "chars"：因单次长度上限停下；""：读到窗口末尾
+    stop_reason: str
+    note: str
+
+
+def read_window(
+    root: Path,
+    path: str,
+    *,
+    offset: int = 1,
+    limit: int = 2000,
+    max_chars: int = 20_000,
+) -> ReadWindow:
+    """按**行**读取一个窗口。
+
+    为什么是行而不是字符：模型引用位置、生成编辑指令都靠行号；字符级分页
+    既没法给行号，也没法让模型「从第 87 行接着读」。这是 ACI 的基本要求。
+
+    `offset` 用 **1-based**（第 1 行就是文件第一行）：模型看到的是 1-based 行号，
+    说「从第 87 行开始」也是 1-based，用 0-based 会让它系统性差一行。
+    """
+    try:
+        target = safe_resolve(root, path)
+    except WorkspaceError as e:
+        return ReadWindow(ok=False, code="bad_path", note=str(e))
+
+    if not target.exists():
+        return ReadWindow(ok=False, code="no_file")
+    if target.is_dir():
+        return ReadWindow(ok=False, code="is_dir")
+
+    try:
+        size = target.stat().st_size
+    except OSError:
+        return ReadWindow(ok=False, code="no_file")
+    if size > MAX_READ_BYTES:
+        return ReadWindow(ok=False, code="too_large", note=str(size))
+
+    raw = target.read_bytes()
+    if is_binary(raw):
+        return ReadWindow(ok=False, code="not_text")
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ReadWindow(ok=False, code="not_text")
+
+    all_lines = content.splitlines()
+    total = len(all_lines)
+    if total == 0:
+        return ReadWindow(
+            ok=True, lines=[], total_lines=0, start_line=0, end_line=0, has_more=False
+        )
+
+    try:
+        start = max(1, int(offset))
+    except (TypeError, ValueError):
+        start = 1
+    try:
+        span = max(1, min(int(limit), MAX_READ_LINES))
+    except (TypeError, ValueError):
+        span = 2000
+    try:
+        budget = max(500, int(max_chars))
+    except (TypeError, ValueError):
+        budget = 20_000
+
+    if start > total:
+        return ReadWindow(ok=False, code="offset_out_of_range", total_lines=total)
+
+    end = min(total, start + span - 1)
+
+    window: list[tuple[int, str]] = []
+    used = 0
+    cursor = start - 1
+    stop_reason = ""
+    for n in range(start, end + 1):
+        raw_line = all_lines[n - 1]
+        cost = _GUTTER_WIDTH + 3 + len(raw_line) + 1
+
+        if not window:
+            # 第一行就超预算：单行 CSV / 压缩过的 JSON 会一次吐出几万字符。
+            # 这里必须截断这一行——但行内没法续读，所以把 stop_reason 标成
+            # long_line，由工具层引导模型改用 grep 定位，而不是给一个假的 offset。
+            if cost > budget:
+                keep = max(200, budget - _GUTTER_WIDTH - 40)
+                window.append(
+                    (n, raw_line[:keep] + f" …（本行共 {len(raw_line)} 字符，已截断）")
+                )
+                cursor = n
+                stop_reason = "long_line"
+                break
+            window.append((n, raw_line))
+            used += cost
+            cursor = n
+            continue
+
+        if used + cost > budget:
+            stop_reason = "chars"
+            break
+        window.append((n, raw_line))
+        used += cost
+        cursor = n
+
+    return ReadWindow(
+        ok=True,
+        lines=window,
+        total_lines=total,
+        start_line=start,
+        end_line=cursor,
+        has_more=cursor < total,
+        stop_reason=stop_reason,
     )
 
 
@@ -543,14 +716,18 @@ def glob_files(
 __all__ = [
     "MAX_EDIT_BYTES",
     "MAX_GLOB_MATCHES",
+    "MAX_READ_BYTES",
     "EditOutcome",
+    "GlobOutcome",
     "GrepHit",
     "GrepOutcome",
-    "GlobOutcome",
+    "ReadWindow",
     "SKIP_DIRS",
     "detect_newline",
     "edit_text",
     "glob_files",
     "grep_files",
     "is_binary",
+    "read_window",
+    "strip_line_number_prefix",
 ]

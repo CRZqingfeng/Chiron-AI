@@ -19,7 +19,15 @@ import unittest
 from pathlib import Path
 
 from app.workspace.local import LocalWorkspace
-from app.workspace.ops import detect_newline, edit_text, glob_files, grep_files, is_binary
+from app.workspace.ops import (
+    detect_newline,
+    edit_text,
+    glob_files,
+    grep_files,
+    is_binary,
+    read_window,
+    strip_line_number_prefix,
+)
 
 
 class EditTextTests(unittest.TestCase):
@@ -329,6 +337,88 @@ class GlobTests(unittest.TestCase):
 
     def test_path_escape_rejected(self):
         self.assertEqual(glob_files(self.root, "*.py", path="../")["code"], "bad_path")
+
+
+class ReadWindowTests(unittest.TestCase):
+    """行级读取：分页边界与拒绝面。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.ws = LocalWorkspace(Path(self._tmp.name))
+        self.root = self.ws.root
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write(self, name: str, content: str | bytes) -> None:
+        target = self.root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content.encode("utf-8") if isinstance(content, str) else content)
+
+    def test_window_and_line_numbers(self):
+        self._write("a.txt", "\n".join(f"l{i}" for i in range(1, 11)))
+        out = read_window(self.root, "a.txt", offset=4, limit=3)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["lines"], [(4, "l4"), (5, "l5"), (6, "l6")])
+        self.assertEqual((out["start_line"], out["end_line"]), (4, 6))
+        self.assertTrue(out["has_more"])
+
+    def test_last_page_has_no_more(self):
+        self._write("a.txt", "a\nb\n")
+        out = read_window(self.root, "a.txt", offset=2, limit=10)
+        self.assertEqual(out["lines"], [(2, "b")])
+        self.assertFalse(out["has_more"])
+
+    def test_char_budget_stops_early_and_reports(self):
+        """字符预算先于行数用完时，要标 chars 并给出停在哪一行。"""
+        self._write("a.txt", "\n".join("x" * 100 for _ in range(50)))
+        out = read_window(self.root, "a.txt", limit=50, max_chars=500)
+        self.assertEqual(out["stop_reason"], "chars")
+        self.assertGreater(out["end_line"], 0)
+        self.assertLess(out["end_line"], 50)
+
+    def test_single_long_line_is_clipped(self):
+        self._write("one.txt", "y" * 5000)
+        out = read_window(self.root, "one.txt", max_chars=800)
+        self.assertEqual(out["stop_reason"], "long_line")
+        self.assertLess(len(out["lines"][0][1]), 900)
+
+    def test_empty_file(self):
+        self._write("e.txt", "")
+        out = read_window(self.root, "e.txt")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["lines"], [])
+        self.assertEqual(out["total_lines"], 0)
+
+    def test_offset_out_of_range(self):
+        self._write("a.txt", "a\nb\n")
+        out = read_window(self.root, "a.txt", offset=10)
+        self.assertEqual(out["code"], "offset_out_of_range")
+        self.assertEqual(out["total_lines"], 2)
+
+    def test_rejections(self):
+        self._write("blob.bin", b"\x00\x01")
+        (self.root / "dir").mkdir()
+        self.assertEqual(read_window(self.root, "blob.bin")["code"], "not_text")
+        self.assertEqual(read_window(self.root, "dir")["code"], "is_dir")
+        self.assertEqual(read_window(self.root, "nope.txt")["code"], "no_file")
+        self.assertEqual(read_window(self.root, "../x")["code"], "bad_path")
+
+
+class StripLinePrefixTests(unittest.TestCase):
+    """edit_file 兜住「模型连行号一起复制」的那层容错。"""
+
+    def test_strips_when_every_line_has_gutter(self):
+        self.assertEqual(strip_line_number_prefix("  1 | a\n  2 | b"), "a\nb")
+
+    def test_returns_none_for_plain_text(self):
+        self.assertIsNone(strip_line_number_prefix("hello\nworld"))
+
+    def test_returns_none_for_mixed_shapes(self):
+        self.assertIsNone(strip_line_number_prefix("  1 | a\nplain"))
+
+    def test_empty_input(self):
+        self.assertIsNone(strip_line_number_prefix(""))
 
 
 if __name__ == "__main__":

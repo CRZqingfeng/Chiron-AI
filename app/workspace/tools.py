@@ -20,9 +20,11 @@ from app.workspace.ops import (
     EditOutcome,
     GlobOutcome,
     GrepOutcome,
+    ReadWindow,
     edit_text,
     glob_files,
     grep_files,
+    read_window,
 )
 
 # 单次列目录返回的条目上限：工作区被写满时，一次 list 也不该把上下文打爆
@@ -35,6 +37,58 @@ def _fmt_size(size: int) -> str:
     if size < 1024 * 1024:
         return f"{size / 1024:.1f}KB"
     return f"{size / 1024 / 1024:.1f}MB"
+
+
+def _format_read_result(path: str, out: ReadWindow) -> str:
+    """按「行号 | 内容」渲染，并在末尾给出**可执行的续读指令**。
+
+    旧版的截断提示写着「可加大 max_chars 或分段读取」，但当时没有 offset，
+    分段读取根本做不到——模型会照着提示重试，然后撞同一个上限。
+    现在提示里直接给 `offset=N`，它抄过去就能用。
+    """
+    code = out.get("code", "")
+    if code == "bad_path":
+        return f"错误：{out.get('note') or '路径不合法'}。"
+    if code == "no_file":
+        return f"错误：文件不存在：{path}。先用 workspace_list_dir 确认路径。"
+    if code == "is_dir":
+        return f"错误：{path} 是目录，请用 workspace_list_dir。"
+    if code == "too_large":
+        size_mb = int(out.get("note") or 0) / 1024 / 1024
+        return f"错误：文件过大（{size_mb:.1f}MB），单次最多读 5MB。"
+    if code == "not_text":
+        return f"错误：{path} 不是 UTF-8 文本文件，读不了。"
+    if code == "offset_out_of_range":
+        total = out.get("total_lines", 0)
+        return f"错误：offset 超出范围（文件共 {total} 行）。用 offset=1 从头读。"
+
+    rows = out.get("lines") or []
+    if not rows:
+        return "(文件为空)"
+
+    total = out.get("total_lines", 0)
+    width = max(3, len(str(total)))
+    body = "\n".join(f"{n:>{width}} | {text}" for n, text in rows)
+
+    end = out.get("end_line", 0)
+    start = out.get("start_line", 1)
+
+    # 单行超长必须单独提示：即使没有「更多行」，模型也得知道自己拿到的是残行，
+    # 否则它会拿半截内容去做 edit，匹配永远失败。
+    if out.get("stop_reason") == "long_line":
+        return (
+            f"{body}\n...（第 {end} 行本身超过单次长度上限，已截断显示；"
+            f"这一行建议用 workspace_grep 定位关键片段，或用 run_command 处理）"
+        )
+
+    if not out.get("has_more"):
+        return body
+
+    if out.get("stop_reason") == "chars":
+        tail = f"...（单次长度已达上限，停在第 {end} 行；共 {total} 行，用 offset={end + 1} 继续读）"
+    else:
+        tail = f"...（已显示第 {start}-{end} 行，共 {total} 行；用 offset={end + 1} 继续读）"
+    return f"{body}\n{tail}"
 
 
 def _format_edit_error(path: str, out: EditOutcome) -> str:
@@ -224,27 +278,34 @@ def make_workspace_tools(ws: BaseWorkspace, *, include_exec: bool = False) -> li
         return "\n".join(lines)
 
     @tool
-    def workspace_read_file(path: str, max_chars: int = 20000) -> str:
-        """读取工作区里的文本文件内容。
+    def workspace_read_file(
+        path: str,
+        offset: int = 1,
+        limit: int = 2000,
+        max_chars: int = 20000,
+    ) -> str:
+        """读取工作区里的文本文件（输出带行号，可分页续读）。
 
-        何时使用：需要引用自己之前写入、或用户让你查看的工作区文件时。
-        何时不要使用：读会话附件请用 read_session_attachment（附件是只读的，不在工作区里）。
-        长文件建议先用 workspace_list_dir 确认大小，再决定是否分段读取。
+        何时使用：需要引用自己之前写入、或用户让你查看的工作区文件时；
+                    改文件之前也先读一遍，确认原文到底长什么样。
+        何时不要使用：读会话附件请用 read_session_attachment（附件不在工作区里）；
+                       想找「哪个文件里有某段内容」用 workspace_grep，不要逐个读文件。
         path：相对工作区根目录的路径，如 "report.md"。
-        max_chars：本次最多返回多少字符，默认 20000，超过会被截断并提示。
+        offset：从第几行开始读，**行号从 1 开始**（不是 0），默认 1。
+        limit：本次最多读多少行，默认 2000。
+        max_chars：单次返回的字符上限，默认 20000；超出会提前停并在末尾告诉你从哪一行继续。
+
+        注意：每行前面的「行号 |」是给你定位用的，**不属于文件内容**——
+        用 workspace_edit_file 时 old_string 不要带这个前缀。
         """
-        try:
-            # schema 已在入口校验类型，这里是二次兜底：直接调 `.func()` 时仍能钳值
-            budget = max(1000, min(int(max_chars), 100_000))
-        except (TypeError, ValueError):
-            budget = 20000
-        try:
-            text = ws.read_text(path or ".", max_bytes=budget * 3)
-        except WorkspaceError as e:
-            return f"错误：{e}"
-        if len(text) > budget:
-            text = text[:budget] + f"\n...[已截断，仅显示前 {budget} 字符，可加大 max_chars 或分段读取]"
-        return text or "(文件为空)"
+        out = read_window(
+            ws.root_path,
+            path or "",
+            offset=offset,
+            limit=limit,
+            max_chars=max_chars,
+        )
+        return _format_read_result(path or "", out)
 
     @tool
     def workspace_write_file(path: str, content: str) -> str:

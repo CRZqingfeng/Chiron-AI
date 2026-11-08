@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,7 +65,8 @@ class WorkspaceToolsTests(unittest.TestCase):
         w = self.tools["workspace_write_file"].invoke({"path": "a.txt", "content": "第一行"})
         self.assertIn("已写入", w)
         r = self.tools["workspace_read_file"].invoke({"path": "a.txt"})
-        self.assertEqual(r, "第一行")
+        # U10 P1-A 起 read_file 带行号（ACI：模型要能引用「第几行」）
+        self.assertEqual(r, "  1 | 第一行")
 
     def test_write_creates_dirs(self):
         self.tools["workspace_write_file"].invoke({"path": "x/y/z.md", "content": "v"})
@@ -102,11 +104,17 @@ class WorkspaceToolsTests(unittest.TestCase):
 
     # --- 截断 -------------------------------------------------------------
 
-    def test_read_truncates_long_text(self):
+    def test_read_single_huge_line_is_clipped(self):
+        """单行 5000 字符（压缩 JSON / 单行 CSV）：不能整行吐出来，也不能返回空。
+
+        行内没法续读，所以提示必须引导模型换策略（grep 定位），
+        而不是给一个会跳过半行的 offset。
+        """
         self.tools["workspace_write_file"].invoke({"path": "big.txt", "content": "x" * 5000})
         out = self.tools["workspace_read_file"].invoke({"path": "big.txt", "max_chars": 1000})
+        self.assertLess(len(out), 1400)
         self.assertIn("已截断", out)
-        self.assertLess(len(out), 1200)
+        self.assertIn("workspace_grep", out)
 
     def test_read_empty_file(self):
         self.tools["workspace_write_file"].invoke({"path": "e.txt", "content": ""})
@@ -127,7 +135,7 @@ class WorkspaceToolsTests(unittest.TestCase):
         """绕过 schema 直接调函数体时，非法值应被钳到合法区间而不是崩。"""
         self.tools["workspace_write_file"].invoke({"path": "y.txt", "content": "hello"})
         out = self.tools["workspace_read_file"].func("y.txt", "abc")
-        self.assertEqual(out, "hello")
+        self.assertIn("hello", out)
 
     # --- edit_file：返回形状是 ACI 的一部分 ---------------------------------
 
@@ -186,6 +194,70 @@ class WorkspaceToolsTests(unittest.TestCase):
         out = self.tools["workspace_glob"].invoke({"pattern": "**/*.py"})
         self.assertIn("src/a.py", out)
         self.assertNotIn("b.md", out)
+
+    # --- read 分页（U10 P1-A）---------------------------------------------
+
+    def test_read_has_line_numbers(self):
+        content = "\n".join(f"line{i}" for i in range(1, 6))
+        self.tools["workspace_write_file"].invoke({"path": "a.txt", "content": content})
+        out = self.tools["workspace_read_file"].invoke({"path": "a.txt"})
+        self.assertIn("  1 | line1", out)
+        self.assertIn("  5 | line5", out)
+
+    def test_read_offset_is_one_based(self):
+        content = "\n".join(f"line{i}" for i in range(1, 11))
+        self.tools["workspace_write_file"].invoke({"path": "a.txt", "content": content})
+        out = self.tools["workspace_read_file"].invoke({"path": "a.txt", "offset": 3, "limit": 2})
+        self.assertIn("  3 | line3", out)
+        self.assertIn("  4 | line4", out)
+        self.assertNotIn("line2", out)
+        self.assertIn("offset=5", out, "必须给出可执行的续读指令")
+
+    def test_read_pages_cover_file_without_gaps(self):
+        """100 行按 30 行一页读，拼起来必须与原文完全一致（不重不漏）。"""
+        content = "\n".join(f"row-{i:03d}" for i in range(1, 101))
+        self.tools["workspace_write_file"].invoke({"path": "a.txt", "content": content})
+
+        seen: list[str] = []
+        offset = 1
+        for _ in range(10):
+            out = self.tools["workspace_read_file"].invoke(
+                {"path": "a.txt", "offset": offset, "limit": 30}
+            )
+            for line in out.split("\n"):
+                if " | " in line and not line.startswith("..."):
+                    seen.append(line.split(" | ", 1)[1])
+            hit = re.search(r"offset=(\d+)", out)
+            if not hit:
+                break
+            offset = int(hit.group(1))
+
+        self.assertEqual(seen, [f"row-{i:03d}" for i in range(1, 101)])
+
+    def test_read_offset_beyond_eof(self):
+        self.tools["workspace_write_file"].invoke({"path": "a.txt", "content": "a\nb\n"})
+        out = self.tools["workspace_read_file"].invoke({"path": "a.txt", "offset": 99})
+        self.assertTrue(out.startswith("错误："), out)
+        self.assertIn("共 2 行", out)
+
+    def test_edit_tolerates_line_number_prefix(self):
+        """模型从 read_file 输出里连行号一起复制时，edit 必须能兜住。
+
+        这是加行号带来的必然风险：行号不是文件内容，带上就永远匹配不上，
+        而报错只会说「未找到」，模型不知道毛病出在哪。
+        """
+        self.tools["workspace_write_file"].invoke(
+            {"path": "a.py", "content": "def f():\n    return 1\n"}
+        )
+        out = self.tools["workspace_edit_file"].invoke(
+            {
+                "path": "a.py",
+                "old_string": "  2 |     return 1",
+                "new_string": "  2 |     return 2",
+            }
+        )
+        self.assertIn("已修改", out)
+        self.assertIn("return 2", (Path(self._tmp.name) / "a.py").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
