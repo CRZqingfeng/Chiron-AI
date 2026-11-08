@@ -424,6 +424,10 @@ def make_workspace_tools(ws: BaseWorkspace, *, include_exec: bool = False) -> li
             **会请用户确认**：涉及写文件、删改、执行代码的命令。可证明只读的命令
             （ls / cat / head / tail / wc / grep / git status|diff|log 等）免确认直接执行，
             因此不需要为了「看一眼目录」绕路。
+            **跑测试**（pytest / python -m py_compile）：本会话批准过一次后免确认。
+            ⚠️ 但**不要加管道或重定向**（`| head`、`2>&1`、`>` 都不行）——那样会被当成
+            任意命令重新要求确认。需要限制输出就用 `-q`、`--tb=short` 这类参数，
+            例如 `python -m pytest -q --tb=short`。
             command：完整的 shell 命令，如 "python script.py" 或 "ls -la"。
             cwd：相对工作区根目录的工作目录，默认根目录。
             timeout：超时秒数，默认 30，最大 120。
