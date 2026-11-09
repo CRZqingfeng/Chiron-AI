@@ -139,14 +139,14 @@ def main():
         means, vals_all = [], []
         for _n, rows in rounds:
             vs = [r["scores"][key] for r in rows if r["scores"].get(key) is not None]
-            means.append(round(st.mean(vs), 4) if vs else None)
+            means.append(st.mean(vs) if vs else None)
             vals_all += vs
         summary[key] = {
             "label": label, "thr": thr, "dir": direction, "desc": desc,
-            "mean": round(st.mean(vals_all), 4) if vals_all else None,
-            "median": round(st.median(vals_all), 4) if vals_all else None,
+            "mean": st.mean(vals_all) if vals_all else None,
+            "median": st.median(vals_all) if vals_all else None,
             "rounds": means, "vals": vals_all,
-            "diff": round(abs(means[0] - means[1]), 4) if len(means) == 2 and None not in means else None,
+            "diff": abs(means[0] - means[1]) if len(means) == 2 and None not in means else None,
             "pass_n": (sum(1 for v in vals_all if v >= thr) if thr and direction == "high" else None),
         }
 
@@ -172,7 +172,7 @@ def main():
             vs = [r["scores"][key] for _n, rows in rounds
                   for r in rows if r["idx"] == base["idx"] and r["scores"].get(key) is not None]
             rec["rounds"][key] = [round(v, 3) for v in vs]
-            rec["scores"][key] = round(st.mean(vs), 4) if vs else None
+            rec["scores"][key] = st.mean(vs) if vs else None
         per_q.append(rec)
 
     # ---------- 分诊（把"答不出"拆成两类原因，避免混成一个均值） ----------
@@ -182,7 +182,7 @@ def main():
 
     def cohort_mean(key, skip=frozenset()):
         vs = [r["scores"][key] for r in per_q if r["idx"] not in skip and r["scores"].get(key) is not None]
-        return round(st.mean(vs), 4) if vs else None
+        return st.mean(vs) if vs else None
 
     cohort = []
     for key, label, thr, direction, _ in META:
