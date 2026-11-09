@@ -98,15 +98,22 @@ REPORTS = [
         "scope_extra": "<br><b>轮次</b>：单轮。<b>语料是真实公开文档</b>：三份 GitHub README"
                        "（FastAPI / Pydantic / Uvicorn）+ 一篇 arXiv 论文 PDF（RAG 原论文），"
                        "242 个块 / 约 22.4 万字符，不是自造。FastAPI 的块里混着 HTML 标签、"
-                       "论文是两栏排版，这些都是真实文档才有的坑。",
+                       "论文是两栏排版，这些都是真实文档才有的坑。<br>"
+                       "<b>本版是入库剥离 HTML 之后的读数</b>：改动前，FastAPI README 的"
+                       "logo / badge / sponsor 会被切成独立块挤占 top-5（#3 的 5 个块里 4 个、"
+                       "#4 里 3 个是这种），context_precision 只有 0.583 / 0.500。"
+                       "剥离后这两个题注入的噪音块都是 0/5，整组精度 0.820→0.928、召回 0.811→0.864。",
         "args": [
-            "--r1=.tmp/ragas/scnet_k3.json",
-            "--refuse=.tmp/ragas/k3B_new.json",
-            "--collect1=.tmp/ragas/k3_new.json",
+            "--r1=.tmp/ragas/scnet_k3b.json",
+            "--baseline1=.tmp/ragas/scnet_k3.json",
+            "--change-note=入库时剥离 Markdown 内嵌 HTML（logo / badge / sponsor 装饰块）",
+            "--refuse=.tmp/ragas/k3bB.json",
+            "--collect1=.tmp/ragas/k3b.json",
+            "--diagnose=.tmp/ragas/diagnose_k3.json",
             "--corpus=真实公开文档 4 份（FastAPI / Pydantic / Uvicorn README + RAG 论文 PDF，"
                       "242 chunk；11 计分 + 3 应拒答）",
-            "--scope=u1_a4",
-            "--title=Chiron-AI · RAGAS 评估（第三组：真实公开文档 · 宽召回）",
+            "--scope=u1_a5",
+            "--title=Chiron-AI · RAGAS 评估（第三组：真实公开文档 · 剥离 HTML）",
             "--limits=语料为公开文档快照（2026-11-08 抓取），README 会随上游更新而失效；"
                     "拒答题故意选了 Docker / K8s / Gunicorn——三者在本库 0 命中，但都属于"
                     "「模型可能凭常识答」的题，测的正是该不该拒",
@@ -117,7 +124,7 @@ REPORTS = [
 
 def check_inputs() -> None:
     """防呆：五项任一为 None 就拒绝出报告。"""
-    needed = ("scnet_w1", "scnet_k2r1", "scnet_k2r2", "scnet_k3")
+    needed = ("scnet_w1", "scnet_k2r1", "scnet_k2r2", "scnet_k3b", "scnet_k3")
     bad = []
     for f in needed:
         p = ROOT / f".tmp/ragas/{f}.json"

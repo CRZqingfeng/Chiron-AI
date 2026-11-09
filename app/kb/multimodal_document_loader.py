@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,6 +17,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from loguru import logger
 
 from app.kb.multimodal_embedding import get_multimodal_embedding_service
+from app.settings import settings
 
 
 def _filename_fingerprint(filename: str) -> str:
@@ -91,6 +93,89 @@ def _load_excel_pages(file_path: str) -> list[_SheetPage]:
     return pages
 
 
+# ---------------------------------------------------------------------------
+# Markdown 里夹带的 HTML 噪音：剥离 + 空块过滤
+# ---------------------------------------------------------------------------
+# 只列常见 HTML 标签名，不要写成 `<[a-zA-Z][^>]*>`——那样技术文档里的
+# List<String>、Map<K,V> 会被当成标签删掉。
+_HTML_TAG = (
+    r"(?:html|head|body|p|div|span|a|img|br|hr|h[1-6]|ul|ol|li|dl|dt|dd|"
+    r"table|thead|tbody|tfoot|tr|td|th|pre|code|kbd|samp|var|"
+    r"strong|em|b|i|u|s|del|ins|mark|blockquote|q|cite|"
+    r"section|article|header|footer|nav|aside|main|figure|figcaption|"
+    r"details|summary|sup|sub|small|big|center|font|"
+    r"video|audio|source|iframe|picture|canvas|"
+    r"script|style|link|meta|form|input|button|label|select|option|textarea|"
+    r"svg|path|circle|rect|line|polygon|polyline|g|defs|use|symbol)"
+)
+_HTML_ANY_TAG_RE = re.compile(rf"</?{_HTML_TAG}\b[^>]*>", re.I)
+_HTML_BLOCK_TAG_RE = re.compile(
+    r"</?(?:p|div|br|hr|h[1-6]|ul|ol|li|table|thead|tbody|tr|td|th|"
+    r"blockquote|section|article|header|footer|nav|details|summary|pre)\b[^>]*>",
+    re.I,
+)
+_HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
+_HTML_EMBEDDED_RE = re.compile(r"<(script|style)\b[^>]*>[\s\S]*?</\1\s*>", re.I)
+_FENCED_CODE_RE = re.compile(r"(```[\s\S]*?```|~~~[\s\S]*?~~~)")
+# 整行只有 Markdown 图片/徽章：[![alt](img)](link) 或 ![alt](img)
+_MD_BADGE_LINE_RE = re.compile(
+    r"^[ \t]*\[?!\[[^\]]*\]\([^)]*\)(?:\]\([^)]*\))?[ \t]*$", re.M
+)
+
+
+def strip_html_noise(text: str) -> str:
+    """剥离 Markdown 里夹带的 HTML 装饰性内容。
+
+    为什么需要：FastAPI 这类项目的 README 开头有大段
+    ``<p align="center"><img src=... alt="FastAPI"></p>``、徽章和赞助商链接，
+    被切成独立块后既召回不到答案，又挤占 top_k 名额
+    （实测第三组 #3/#4 的 5 个注入块里有 3 个是这种，context_precision 只有 0.583 / 0.500）。
+
+    ★ 两个不能踩的坑：
+    1. **必须保护 fenced code block** —— 讲 HTML/JSX 的文档，代码块里的标签是正文，
+       剥掉就把内容毁了；
+    2. **只剥常见 HTML 标签名** —— 不能写成 ``<[a-zA-Z][^>]*>``，
+       否则 List<String>、Map<K,V> 会被误删。
+    """
+    if not text:
+        return text
+
+    fences: List[str] = []
+
+    def _stash(m: "re.Match[str]") -> str:
+        fences.append(m.group(0))
+        return f"\x00FENCE{len(fences) - 1}\x00"
+
+    s = _FENCED_CODE_RE.sub(_stash, text)
+    s = _HTML_COMMENT_RE.sub("", s)
+    s = _HTML_EMBEDDED_RE.sub("", s)
+    s = _HTML_BLOCK_TAG_RE.sub("\n", s)   # 块级标签留换行，保住段落边界
+    s = _HTML_ANY_TAG_RE.sub("", s)
+    s = _MD_BADGE_LINE_RE.sub("", s)
+    s = re.sub(r"[ \t]+\n", "\n", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+
+    for i, block in enumerate(fences):
+        s = s.replace(f"\x00FENCE{i}\x00", block)
+    return s.strip()
+
+
+def has_substance(text: str, min_chars: int = 10) -> bool:
+    """文本块是否有实质内容（去标点与空白后的字母/数字/汉字数 ≥ min_chars）。
+
+    剥完 HTML 剩下的空块、纯链接残渣要丢掉：进向量库只会白占候选池名额。
+    """
+    return len(re.sub(r"[\W_]+", "", text or "")) >= max(1, min_chars)
+
+
+def _strip_enabled() -> bool:
+    return bool(getattr(settings, "KB_STRIP_HTML_ENABLED", True))
+
+
+def _min_chunk_chars() -> int:
+    return max(1, int(getattr(settings, "KB_CHUNK_MIN_CHARS", 10) or 10))
+
+
 def _load_text_pages(file_path: str) -> list[_SheetPage]:
     """
     读取 TXT / Markdown 纯文本为单个"页"（page=0），沿用现有三级分块。
@@ -98,6 +183,13 @@ def _load_text_pages(file_path: str) -> list[_SheetPage]:
     :return: _SheetPage 列表；空文件返回空列表
     """
     text = Path(file_path).read_bytes().decode("utf-8", errors="replace").strip()
+    if text and _strip_enabled():
+        cleaned = strip_html_noise(text)
+        if cleaned != text:
+            logger.debug(
+                f"剥离 HTML 噪音 {Path(file_path).name}: {len(text)} -> {len(cleaned)} 字符"
+            )
+            text = cleaned
     return [_SheetPage(text, 0)] if text else []
 
 
@@ -859,10 +951,20 @@ class MultimodalDocumentLoader:
                 page_text_start=0,  # 每页重新计算位置
             )
             
-            # 更新全局 chunk 索引
-            page_global_chunk_idx += len(page_chunks)
+            # 过滤掉没有实质内容的块：剥完 HTML 的空块、纯链接残渣进库只会白占检索名额。
+            # 图片块在下面单独创建，text 本来就为空，不受这里影响。
+            kept = [c for c in page_chunks
+                    if has_substance(c.get("text") or "", _min_chunk_chars())]
+            if len(kept) != len(page_chunks):
+                logger.debug(
+                    f"丢弃 {len(page_chunks) - len(kept)} 个无实质内容的块: "
+                    f"{filename} p{base_doc['page_number']}"
+                )
+
+            # 更新全局 chunk 索引（只按保留下来的块推进，避免索引跳号）
+            page_global_chunk_idx += len(kept)
             # 将分块后的文档添加到结果列表
-            documents.extend(page_chunks)
+            documents.extend(kept)
         
         # 建立文本块和图片的关联（PDF 使用与分块相同的 0 起算页码 + 页面坐标系）
         documents, images = self._associate_text_with_images(
