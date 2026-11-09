@@ -398,6 +398,16 @@ class Settings(BaseSettings):
     KB_PRESELECT_MAX_DOC_LINES: int = 100
     # 前置选档时附带最近 N 轮对话作为上下文；为 0 则仅传当前用户问题
     KB_PRESELECT_CONTEXT_TURNS: int = 3
+    # ★ 入库时剥离 Markdown 里夹带的 HTML 噪音（logo / badge / sponsor 之类）。
+    #   起因：FastAPI 等项目的 README 开头有大段 <p align="center"><img src=...>，
+    #   被切成独立块后挤占检索配额 —— 实测第三组 #3/#4 的 5 个注入块里有 3 个是这种纯装饰块，
+    #   context_precision 只有 0.583 / 0.500。
+    #   实现上会保护 fenced code block（讲 HTML/JSX 的文档不受影响），且只剥常见 HTML 标签，
+    #   不会误伤 List<String> 这类泛型写法。
+    KB_STRIP_HTML_ENABLED: bool = True
+    # 分块后过滤"无实质内容"的块：去掉标点与空白后不足 N 个字符就丢弃。
+    # 剥完 HTML 剩下的空块、纯链接残渣占着候选池却召回不了任何东西。
+    KB_CHUNK_MIN_CHARS: int = 10
     KB_PRESELECT_CONTEXT_MAX_MSG_CHARS: int = 1200
     KB_PRESELECT_CONTEXT_MAX_TOTAL_CHARS: int = 5000
     # 「当前用户问题」段最大字符数（与「前序对话」分开截断）
