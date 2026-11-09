@@ -1,13 +1,17 @@
 /**
  * 工具审批确认：允许 / 拒绝一次被中断的高危操作。
  *
- * 与 `useChatMcpConfirm` 的区别是「恢复方式」：
- * - MCP 那套是「写一张批准票 + 整轮重跑」，已执行过的工具会再跑一遍；
- * - 这里走 LangGraph 的 `interrupt` 断点恢复（`Command(resume=...)`），
- *   图从中断点继续，已完成的步骤不会重跑。
+ * U5c 起这是**唯一**的审批通道：workspace 命令与 MCP 高危工具都走这里。
+ * 判定与中断都在后端（`app/chat/approval.py` + `app/mcp_client/tool_policy.py`），
+ * 前端只管把用户的决定送回去。
  *
- * 交互形态沿用 `resumeApprovedMcp` 的范式：发一个新 job（带原 thread_id），
- * 消费同一个 SSE 流，后端会把原有那条助手消息原地更新为最终回答。
+ * 恢复方式是 LangGraph 的 `interrupt` 断点恢复（`Command(resume=...)`）：
+ * 发一个新 job（带原 thread_id + 目标消息 id），图从中断点继续，
+ * 已完成的步骤不会重跑。
+ *
+ * 为什么这点值得写在这：U5c 之前 MCP 走的是「写一张批准票 + 整轮重跑」，
+ * 中断前调过的读类工具会在重跑里再执行一遍。两套逻辑并存时，
+ * 用户点的是同一个「允许」按钮，行为却完全不同——排查时最容易看错的地方。
  */
 import { ref } from 'vue'
 

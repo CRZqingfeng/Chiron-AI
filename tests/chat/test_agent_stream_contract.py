@@ -162,7 +162,7 @@ def _chunk(text: str, msg_id: str = "m1") -> tuple:
 
 
 @contextlib.contextmanager
-def _harness(storage: _FakeStorage, agent: _FakeAgent, *, checkpointer=None, rag_context=None, mcp_pending=None):
+def _harness(storage: _FakeStorage, agent: _FakeAgent, *, checkpointer=None, rag_context=None):
     """把外部世界全部打桩，只留被测函数的编排逻辑。"""
     with contextlib.ExitStack() as stack:
         stack.enter_context(mock.patch.object(svc, "storage", storage))
@@ -182,7 +182,9 @@ def _harness(storage: _FakeStorage, agent: _FakeAgent, *, checkpointer=None, rag
         )
         stack.enter_context(mock.patch.object(workspace_pkg, "open_workspace", lambda **k: None))
         stack.enter_context(
-            mock.patch.object(svc, "load_agent_mcp_tools", mock.AsyncMock(return_value=([], [])))
+            mock.patch.object(
+                svc, "load_agent_mcp_tools", mock.AsyncMock(return_value=([], [], set()))
+            )
         )
         stack.enter_context(
             mock.patch.object(svc, "build_model_and_agent", lambda *a, **k: (agent, None))
@@ -198,7 +200,6 @@ def _harness(storage: _FakeStorage, agent: _FakeAgent, *, checkpointer=None, rag
         stack.enter_context(
             mock.patch.object(svc, "_should_run_vision_caption", lambda *a, **k: False)
         )
-        stack.enter_context(mock.patch.object(svc, "_mcp_approval_note", lambda *a, **k: ""))
         stack.enter_context(mock.patch.object(svc, "_approval_tools_map", lambda: {}))
         stack.enter_context(
             mock.patch.object(
@@ -208,12 +209,6 @@ def _harness(storage: _FakeStorage, agent: _FakeAgent, *, checkpointer=None, rag
         if rag_context is not None:
             stack.enter_context(
                 mock.patch.object(svc, "get_last_rag_context", lambda clear=False: dict(rag_context))
-            )
-        if mcp_pending is not None:
-            stack.enter_context(
-                mock.patch.object(
-                    svc, "get_pending_mcp_confirmations", lambda clear=False: list(mcp_pending)
-                )
             )
         yield
 
@@ -362,18 +357,6 @@ class AgentStreamBranchTests(TestCase):
         # 普通重生成 → 插入兄弟版本（不是原地覆盖）
         self.assertIn({"op": "insert_version"}, storage.written)
 
-    def test_mcp_resume_overwrites_in_place(self) -> None:
-        storage = _FakeStorage(regen_context=([HumanMessage(content="hi")], "hi", [11]))
-        agent = _FakeAgent([_chunk("续跑", "v2")])
-        with _harness(storage, agent):
-            events = _run(
-                _collect(regenerate=True, target_message_id=11, mcp_approved_pending_id="p1")
-            )
-
-        self.assertEqual(_types(events), ["content", "done"])
-        # MCP 确认续跑 → 原地覆盖目标消息
-        self.assertIn("update_in_place", [w.get("op") for w in storage.written])
-
     def test_regenerate_text_mismatch_is_rejected(self) -> None:
         storage = _FakeStorage(regen_context=([HumanMessage(content="hi")], "原来的问题", [11]))
         agent = _FakeAgent([])
@@ -417,7 +400,7 @@ class AgentStreamBranchTests(TestCase):
         # 取消后不应再落库一条正式回答
         self.assertFalse(any(r.get("type") == "ai" for r in storage.written if "op" not in r))
 
-    def test_trace_sources_and_mcp_confirmation_are_emitted(self) -> None:
+    def test_trace_and_sources_are_emitted_before_done(self) -> None:
         storage = _FakeStorage()
         agent = _FakeAgent([_chunk("答")])
         rag = {
@@ -425,17 +408,18 @@ class AgentStreamBranchTests(TestCase):
             "kb_sources": [{"index": 1, "filename": "a.pdf"}],
             "image_references": [{"attachment_id": "att1"}],
         }
-        with _harness(storage, agent, rag_context=rag, mcp_pending=[{"id": "p1"}]):
+        with _harness(storage, agent, rag_context=rag):
             events = _run(_collect())
 
         types = _types(events)
         self.assertIn("trace", types)
         self.assertIn("sources", types)
-        self.assertIn("mcp_confirmation_required", types)
-        # 顺序契约：正文 → trace → sources → mcp → done
+        # 顺序契约：正文 → trace → sources → done
         self.assertLess(types.index("trace"), types.index("sources"))
-        self.assertLess(types.index("sources"), types.index("mcp_confirmation_required"))
         self.assertEqual(types[-1], "done")
+        # U5c：MCP 审批已并到中断事件（approval_required），不再有单独的
+        # `mcp_confirmation_required`——它在正常收尾里没有任何产生路径了。
+        self.assertNotIn("mcp_confirmation_required", types)
 
     def test_todo_list_streams_and_final_state_is_persisted_once(self) -> None:
         """U9a：清单实时推 `todo_list`，收尾只落一份终态进 thinking_items。"""

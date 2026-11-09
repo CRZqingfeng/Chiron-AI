@@ -139,7 +139,6 @@ def _format_turn_context_block(
     document_filter: list[str] | None,
     session_attachment_hint: str,
     memory_inject: str | None,
-    mcp_approval_note: str | None,
     image_caption: str | None = None,
 ) -> str:
     """拼装仅本回合有效、将并入最后一条 Human 的上下文（不落库）。"""
@@ -190,9 +189,6 @@ def _format_turn_context_block(
             "若仍不足可再调用 search_session_memory 工具）】\n\n"
             + memory_inject.strip()
         )
-    # 6. MCP 审批说明
-    if (mcp_approval_note or "").strip():
-        parts.append(mcp_approval_note.strip())
     return "\n\n".join(parts)
 
 

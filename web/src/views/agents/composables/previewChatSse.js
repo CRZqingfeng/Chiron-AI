@@ -105,17 +105,23 @@ export function applyPreviewChatSsePayload(data, messagesRef, idx) {
       ragTrace: cur.ragTrace ?? null,
       errorText: undefined,
     }
-  } else if (data.type === 'mcp_confirmation_required') {
+  } else if (data.type === 'approval_required') {
+    // 试聊面板不渲染审批卡片（它没有会话上下文与 resume 链路）。
+    // 但**不能静默跳过**：图就停在这里，用户看到的是「生成结束却没有回答」，
+    // 完全不知道发生了什么。明确告诉他去正式对话里确认。
     const cur = list[idx]
-    const item = data.confirmation || {}
-    const confirmations = Array.isArray(cur.mcpConfirmations) ? cur.mcpConfirmations : []
-    if (item.pending_id && !confirmations.some((x) => x.pending_id === item.pending_id)) {
-      confirmations.push(item)
-    }
+    const actions = (data.request || {}).actions || []
+    const names =
+      actions
+        .map((a) => a?.name)
+        .filter(Boolean)
+        .join('、') || '高危操作'
     list[idx] = {
       ...cur,
-      mcpConfirmations: confirmations,
-      pending: cur.pending,
+      errorText: `这次对话需要确认才能执行（${names}）。试聊不支持审批，请到正式对话中重试。`,
+      pending: false,
+      thinkingOpen: cur.thinkingOpen ?? false,
+      ragTrace: cur.ragTrace ?? null,
     }
   } else if (data.type === 'queued') {
     // 并发闸门排队提示：生成开始前先收到该事件

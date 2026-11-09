@@ -204,10 +204,11 @@ class Settings(BaseSettings):
     TOOL_UNTRUSTED_CONTENT_MAX_CHARS: int = 16000
     # 单个 MCP 工具返回内容的字符上限，0=不截断
     MCP_TOOL_RESULT_MAX_CHARS: int = 8000
-    # 高危/写操作 MCP 工具执行前要求用户确认；确认记录按工具名与参数哈希一次性生效
+    # 高危/写操作 MCP 工具执行前要求用户确认（U5c 起走审批中断，见 app/chat/approval.py）。
+    # 原 `MCP_CONFIRMATION_TTL_SECONDS` / `_MAX_PER_TURN` 已随假审批一起删除：
+    #   有效期改由 checkpoint 保留期（1 天）决定，每轮上限由一次中断的 decisions 数量决定。
+    # `extra="ignore"` 保证 .env 里残留这两个键不会报错。
     MCP_CONFIRMATION_REQUIRED: bool = True
-    MCP_CONFIRMATION_TTL_SECONDS: int = 300
-    MCP_CONFIRMATION_MAX_PER_TURN: int = 3
     MCP_HIGH_RISK_TOOL_PATTERNS: list[str] = []
     # 全局嵌入（DashScope 兼容 OpenAI /embeddings）- 多模态嵌入模型
     EMBEDDING_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"

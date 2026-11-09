@@ -31,10 +31,8 @@ from app.chat.vision_expand import expand_messages_for_model
 from app.chat.storage import storage
 from app.core.turn_runtime import (
     get_last_rag_context,
-    get_pending_mcp_confirmations,
     make_session_scope,
     reset_tool_call_guards,
-    set_approved_mcp_pending_id,
     set_rag_step_queue,
     set_session_scope,
     set_turn_tool_policy,
@@ -151,28 +149,6 @@ def _run_kb_document_preselect_with_context(
     return filt, {**ctx_meta, **pre_meta}
 
 
-def _mcp_approval_note(
-    pending_id: str | None,
-    *,
-    user_id: int,
-    agent_id: int,
-    session_id: str,
-) -> str | None:
-    if not (pending_id or "").strip():
-        return None
-    from app.mcp_client.tool_policy import peek_approved_mcp_call
-
-    approved = peek_approved_mcp_call(
-        pending_id, user_id=user_id, agent_id=agent_id, session_id=session_id
-    )
-    if not approved:
-        return None
-    return (
-        f"用户已批准执行 MCP 工具 {approved.get('server_name')}/{approved.get('tool_name')} 一次。"
-        "请立即调用该工具一次；不要调用其他高危工具。"
-    )
-
-
 def _prepare_to_invoke_messages(
     messages: list[BaseMessage],
     ua: UserAgent,
@@ -185,7 +161,6 @@ def _prepare_to_invoke_messages(
     use_web_search: bool,
     document_filter: list[str] | None,
     session_attachment_hint: str,
-    mcp_approval_note: str | None = None,
     path_ids: list[int] | None = None,
     image_caption: str | None = None,
     memory_inject_prefetched: str | None = None,
@@ -271,7 +246,6 @@ def _prepare_to_invoke_messages(
         document_filter=document_filter,
         session_attachment_hint=session_attachment_hint,
         memory_inject=inj,
-        mcp_approval_note=mcp_approval_note,
         image_caption=image_caption,
     )
     return _append_turn_context_message(expanded, turn_block)
@@ -1398,7 +1372,6 @@ async def _finish_interrupted(
         logger.warning("查询待确认消息 id 失败（前端需刷新获取）", exc_info=True)
 
     get_last_rag_context(clear=True)
-    get_pending_mcp_confirmations(clear=True)
     yield {
         "type": "done",
         "cancelled": False,
@@ -1418,7 +1391,6 @@ async def _finish_completed(
     is_resume: bool,
     regenerate: bool,
     regen_target_ai_id: int | None,
-    mcp_approved_pending_id: str | None,
     kb_preselect_meta: dict,
     llm_config: dict | None = None,
 ) -> AsyncIterator[dict]:
@@ -1426,7 +1398,6 @@ async def _finish_completed(
     # 获取 RAG 上下文（顺带清空，避免串到下一轮）
     rag_context = get_last_rag_context(clear=True)
     rag_trace = rag_context.get("rag_trace") if rag_context else None
-    pending_mcp = get_pending_mcp_confirmations(clear=True)
     image_references = rag_context.get("image_references") if rag_context else None
     # 知识库 / 联网搜索互斥，合并走统一 sources 通道
     kb_sources = rag_context.get("kb_sources") if rag_context else None
@@ -1438,9 +1409,6 @@ async def _finish_completed(
 
     if merged_sources:
         yield {"type": "sources", "sources": merged_sources}
-
-    for pending in pending_mcp:
-        yield {"type": "mcp_confirmation_required", "confirmation": pending}
 
     # 规划清单只存终态一份：实时过程走 SSE `todo_list`，历史回放要的是「最后做完的样子」。
     # 每次变化都追加会把时间线刷成十几条快照，和「思考步骤」混在一起。
@@ -1481,24 +1449,14 @@ async def _finish_completed(
             yield {"type": "done", "cancelled": False}
             return
     elif regenerate:
-        # MCP 确认续跑原地覆盖目标助手消息；普通重生成插入兄弟版本并选中新版本
+        # 普通重生成：插入兄弟版本并选中新版本。
+        # U5c 之前 MCP 确认续跑走的是这里 + `update_assistant_in_place`（跨两次 collector
+        # 要 merge_thinking）。现在 MCP 并进 HITL，续跑走 `is_resume` 分支，这条分支只剩重生成。
         saved = False
         if regen_target_ai_id is not None:
-            if mcp_approved_pending_id:
-                # 同 resume：MCP 确认续跑也跨越两次 collector
-                saved = storage.update_assistant_in_place(
-                    user_id,
-                    agent_id,
-                    session_id,
-                    regen_target_ai_id,
-                    ai_msg,
-                    extra=ai_extra,
-                    merge_thinking=True,
-                )
-            else:
-                saved = storage.insert_assistant_version(
-                    user_id, agent_id, session_id, regen_target_ai_id, ai_msg, extra=ai_extra
-                )
+            saved = storage.insert_assistant_version(
+                user_id, agent_id, session_id, regen_target_ai_id, ai_msg, extra=ai_extra
+            )
         if not saved:
             yield {"type": "error", "content": "重新生成失败：目标回复已被移除，请刷新后重试"}
             yield {"type": "done", "cancelled": False}
@@ -1533,7 +1491,6 @@ async def iter_chat_stream_events(
     regenerate: bool = False,
     target_message_id: int | None = None,
     cancel_check: Callable[[], bool] | None = None,
-    mcp_approved_pending_id: str | None = None,
     job_id: str | None = None,
     resume_decision: str | None = None,
     resume_thread_id: str | None = None,
@@ -1568,7 +1525,6 @@ async def iter_chat_stream_events(
     # 会话标识：审批中间件靠它判断「本会话是否已授权跑测试类命令」。
     # 中间件拿不到 session（thread_id 是 job_id），只能从这里取。
     set_session_scope(make_session_scope(user_id, agent_id, session_id))
-    set_approved_mcp_pending_id(mcp_approved_pending_id)
 
     # ① resume 入参校验
     # 重新生成的目标助手消息 id：显式传 target_message_id 时按它定位（MCP 续跑原地覆盖它）；
@@ -1635,10 +1591,26 @@ async def iter_chat_stream_events(
 
     # ⑥ 加载该智能体已启用的 MCP 工具（单服务失败仅记录，不中断对话）；
     # 共享（非属主）会话跳过加载，避免属主凭据被共享用户对话驱动。
+    #
+    # 高危 MCP 工具的审批走 HITL（U5c）：`confirm_names` 并进 `interrupt_on` 即可，
+    # 不再包装工具本身。两条路径必须分开处理，否则会静默丢保护：
+    #   - 有 checkpointer：并进 interrupt_on，模型调用时中断等人确认
+    #   - 无 checkpointer（/chat/stream 没 job）：**不注册**高危工具
+    #     「不注册即无法执行」与 workspace_run_command 的策略一致。
+    #     若这里只是不合并 interrupt_on，高危工具会零确认直接跑——安全倒退。
     if _mcp_tools_allowed_for(ua, user_id):
-        mcp_tools, mcp_errors = await load_agent_mcp_tools(agent_id, user_id=user_id, session_id=session_id)
+        mcp_tools, mcp_errors, mcp_confirm_names = await load_agent_mcp_tools(agent_id)
     else:
-        mcp_tools, mcp_errors = [], []
+        mcp_tools, mcp_errors, mcp_confirm_names = [], [], set()
+    if mcp_confirm_names:
+        from app.chat.approval import apply_mcp_confirmation_gate
+
+        interrupt_on, mcp_tools = apply_mcp_confirmation_gate(
+            interrupt_on,
+            mcp_tools,
+            mcp_confirm_names,
+            checkpointer_available=checkpointer is not None,
+        )
 
     # ⑦ 构建模型和智能体
     agent, _model = build_model_and_agent(
@@ -1728,7 +1700,6 @@ async def iter_chat_stream_events(
             yield event
         if outcome.cancelled:
             get_last_rag_context(clear=True)
-            get_pending_mcp_confirmations(clear=True)
             set_rag_step_queue(None)
             yield {"type": "cancelled"}
             yield {"type": "done", "cancelled": True}
@@ -1747,9 +1718,6 @@ async def iter_chat_stream_events(
         use_web_search=use_web_search,
         document_filter=retrieval_filter if use_knowledge_retrieval else None,
         session_attachment_hint=session_attachment_hint,
-        mcp_approval_note=_mcp_approval_note(
-            mcp_approved_pending_id, user_id=user_id, agent_id=agent_id, session_id=session_id
-        ),
         path_ids=path_ids,
         image_caption=collector.image_caption,
         memory_inject_prefetched=memory_inject_prefetched,
@@ -1762,7 +1730,6 @@ async def iter_chat_stream_events(
     # 如果用户已经点了停止，不启动 Agent 直接返回取消，省了白白消耗 LLM token。
     if cancel_probe is not None and await cancel_probe():
         get_last_rag_context(clear=True)  # 清理 RAG 上下文缓存
-        get_pending_mcp_confirmations(clear=True)  # 清理待确认的 MCP 审批
         set_rag_step_queue(None)  # 注销思考区事件总线
         yield {"type": "cancelled"}
         yield {"type": "done", "cancelled": True}
@@ -1838,7 +1805,6 @@ async def iter_chat_stream_events(
     # ⑭ 取消收尾
     if outcome.cancelled:
         get_last_rag_context(clear=True)
-        get_pending_mcp_confirmations(clear=True)
         yield {"type": "cancelled"}
         yield {"type": "done", "cancelled": True}
         return
@@ -1871,7 +1837,6 @@ async def iter_chat_stream_events(
         is_resume=is_resume,
         regenerate=regenerate,
         regen_target_ai_id=regen_target_ai_id,
-        mcp_approved_pending_id=mcp_approved_pending_id,
         kb_preselect_meta=kb_preselect_meta,
         llm_config=memory_llm_config,
     ):
@@ -1890,7 +1855,6 @@ async def chat_with_agent_stream(
     attachment_ids: list[str] | None = None,
     regenerate: bool = False,
     target_message_id: int | None = None,
-    mcp_approved_pending_id: str | None = None,
 ) -> AsyncIterator[str]:
     """
     异步对话（SSE 字符串片段）
@@ -1917,7 +1881,6 @@ async def chat_with_agent_stream(
         attachment_ids=attachment_ids,
         regenerate=regenerate,
         target_message_id=target_message_id,
-        mcp_approved_pending_id=mcp_approved_pending_id,
     ):
         yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"

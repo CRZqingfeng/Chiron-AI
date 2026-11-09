@@ -40,14 +40,12 @@ from app.services.user_agent_recent import list_recent_agents_public, touch_rece
 from app.models.user_agent import UserAgent
 from app.core.dependency import AuthControl
 from app.models import User
-from app.mcp_client.tool_policy import approve_mcp_confirmation
 from app.schemas.agent_chat import (
     BranchSelectRequest,
     ChatAttachmentUploadResponse,
     ChatJobCreateResponse,
     ChatRequest,
     MessageInfo,
-    McpConfirmRequest,
     SessionDeleteResponse,
     SessionInfo,
     SessionListResponse,
@@ -221,7 +219,6 @@ async def chat_stream_endpoint(request: ChatRequest, current_user: User = Depend
                 attachment_ids=request.attachment_ids or None,
                 regenerate=request.regenerate,
                 target_message_id=request.target_message_id,
-                mcp_approved_pending_id=request.mcp_approved_pending_id,
             ):
                 yield chunk
             # 更新最近使用智能体（编辑器试聊会话不置顶）
@@ -274,7 +271,6 @@ async def create_chat_job_endpoint(request: ChatRequest, current_user: User = De
         attachment_ids=request.attachment_ids or None,
         regenerate=request.regenerate,
         target_message_id=request.target_message_id,
-        mcp_approved_pending_id=request.mcp_approved_pending_id,
         resume_thread_id=request.resume_thread_id,
         resume_decision=request.resume_decision,
     )
@@ -344,12 +340,17 @@ async def cancel_active_chat_job_endpoint(
     return Success(data={"ok": True, "cancelled": cancelled})
 
 
-@router.post("/chat/mcp/confirm", summary="确认或拒绝高危 MCP 工具调用", tags=["智能体模块"])
-async def confirm_mcp_tool(request: McpConfirmRequest, current_user: User = Depends(AuthControl.is_authed)):
-    ok = approve_mcp_confirmation(request.pending_id, current_user.id, request.approve)
-    if not ok:
-        raise HTTPException(status_code=404, detail="确认任务不存在或已过期")
-    return Success(data={"ok": True, "approved": bool(request.approve)})
+@router.post("/chat/mcp/confirm", summary="（已下线）高危 MCP 工具确认", tags=["智能体模块"], deprecated=True)
+async def confirm_mcp_tool(current_user: User = Depends(AuthControl.is_authed)):
+    """U5c 起 MCP 高危工具改走 HITL 断点中断，不再需要单独的确认端点。
+
+    保留这个路由只为了给旧前端一个能看懂的错（比 404 强）：直接 404 的话，
+    用户看到的是「确认任务不存在」，会以为是任务过期而不是版本不匹配。
+    """
+    raise HTTPException(
+        status_code=410,
+        detail="MCP 审批已统一到工具审批卡片，请刷新页面后重试",
+    )
 
 
 @router.get(
