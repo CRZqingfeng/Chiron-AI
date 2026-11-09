@@ -56,6 +56,16 @@ langchain 升级就会在无提示的情况下与上游语义分叉——U5b 的
 **为什么不无条件放行 pytest**：它会加载 `conftest.py`，而那是模型可写的文件。
 无条件免审批等于开了一条「写 conftest.py + pytest」绕过 `python script.py` 审批的后门。
 所以必须有「用户批准过」这个前置。
+
+## MCP 高危工具（U5c）
+
+`apply_mcp_confirmation_gate` 把 `tool_policy.should_confirm_mcp_tool` 判出来的工具名
+并进 `interrupt_on`，MCP 工具因此和 workspace 命令共用同一条审批链路。
+
+**没有 checkpointer 时不能只是「不合并」**：`/chat/stream` 路径没有 job_id，
+拿不到 checkpointer，`interrupt_on` 必然是空的。若此时仍注册高危 MCP 工具，
+它们会**零确认直接执行**——比 U5c 之前更危险（那时 `wrap_mcp_tool_with_confirmation`
+不依赖 checkpointer，照样拦）。所以这条路径必须**不注册**这些工具。
 """
 
 from __future__ import annotations
@@ -78,6 +88,37 @@ def _test_commands_granted() -> bool:
         return test_commands_granted(get_session_scope())
     except Exception:  # noqa: BLE001 - 判定故障按未授权处理
         return False
+
+
+def apply_mcp_confirmation_gate(
+    interrupt_on: dict[str, Any],
+    mcp_tools: list[Any],
+    confirm_names: set[str],
+    *,
+    checkpointer_available: bool,
+) -> tuple[dict[str, Any], list[Any]]:
+    """把高危 MCP 工具接进审批链路，返回 `(interrupt_on, 可用的 mcp_tools)`。
+
+    - **有 checkpointer**：工具名并进 `interrupt_on`，模型调用时中断等人确认。
+      并入的是 dict 的**拷贝**，不改调用方传进来的对象（它在别处可能被复用）。
+    - **无 checkpointer**：把高危工具从列表里剔除。
+      这时 `interrupt_on` 无法生效，"保留工具但不管"等于零确认放行。
+
+    纯函数：不看配置、不读 Redis、不碰全局状态，便于单测覆盖两种分支。
+    """
+    if not confirm_names:
+        return interrupt_on, mcp_tools
+
+    if checkpointer_available:
+        merged = {**interrupt_on, **{name: True for name in confirm_names}}
+        return merged, mcp_tools
+
+    kept = [t for t in mcp_tools if getattr(t, "name", "") not in confirm_names]
+    dropped = len(mcp_tools) - len(kept)
+    if dropped:
+        # 这条日志是排查「为什么模型说没有某个 MCP 工具」的唯一线索
+        logger.info("无审批中断能力，已跳过 {} 个高危 MCP 工具：{}", dropped, sorted(confirm_names))
+    return interrupt_on, kept
 
 
 class SafeCommandAwareHITL(AgentMiddleware):

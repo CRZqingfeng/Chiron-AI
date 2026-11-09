@@ -1,16 +1,38 @@
-"""High-risk MCP tool gating: require one-time user confirmation before execution."""
+"""高危 MCP 工具的**判定**（不负责执行）。
+
+## 这个模块只管一件事：这个工具要不要人工确认
+
+执行方式由 `app/chat/approval.SafeCommandAwareHITL` 统一处理（U5c）：
+判定命中的工具名会进 `interrupt_on`，由 LangGraph 的断点中断拦住，
+用户点「允许」后图**从中断点继续**，已执行过的步骤不重跑。
+
+## 历史：这里曾经有一套「假审批」
+
+U5c 之前，本模块用 `wrap_mcp_tool_with_confirmation` 把每个高危工具包一层：
+调用时先查 Redis 票据，没有就返回一句 `MCP_CONFIRMATION_REQUIRED pending_id=...`
+字符串，靠模型读到后停下来问用户；用户确认后前端**新开一个 job 整轮重跑**，
+再靠一段注入的提示文本诱导模型重新调用一次。
+
+那套做法的代价（实测）：
+- 中断前已执行的读类工具会在重跑里**再执行一遍**（token + 外部 API 配额双浪费）
+- 票据 TTL 只有 300s，用户离开十分钟回来点确认必然失效
+- 两套卡片两套状态，前端 `ChatMessageItem.vue` 要维护两份模板
+
+## 判定顺序（改这里的人请注意）
+
+1. `MCP_CONFIRMATION_REQUIRED=false` → 一律不确认（全局总开关）
+2. 服务级 `confirm_policy`：`never` 不确认 / `always` 全确认 / `auto` 走向下判定
+3. `auto` 时看 MCP 的 annotations：`readOnlyHint=true` → 放行；`destructiveHint=true` → 拦截
+4. 都没有标注时，按「服务名 + 工具名 + 描述」里的动词猜（`create` / `delete` …）
+
+第 4 步是启发式，一定会有误判。它的存在意义是**默认保守**：
+拿不准的时候问一句，代价远小于误执行一次写操作。
+"""
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
-import time
-import uuid
 
-from langchain_core.tools import StructuredTool
-
-from app.core.cache import cache
 from app.settings import settings
 
 _WRITE_ACTIONS = {
@@ -35,21 +57,10 @@ _WRITE_ACTIONS = {
     "transfer",
     "fork",
 }
-_READ_ACTIONS = {
-    "get",
-    "list",
-    "search",
-    "read",
-    "fetch",
-    "resolve",
-    "query",
-    "describe",
-    "show",
-    "download",
-}
 
 
 def _tokenize(text: str) -> set[str]:
+    """拆成小写词集合，驼峰先按大小写边界切开（`createIssue` → `create issue`）。"""
     text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text or "")
     return set(re.findall(r"[a-z0-9]+", text.lower()))
 
@@ -58,25 +69,48 @@ def _write_actions() -> set[str]:
     return set(_WRITE_ACTIONS)
 
 
-def _confirmation_ttl() -> int:
-    return max(60, int(getattr(settings, "MCP_" + "CONFIRMATION_TTL_SECONDS", 300)))
-
-
 def confirmation_required() -> bool:
-    return bool(getattr(settings, "MCP_" + "CONFIRMATION_REQUIRED", True))
+    return bool(getattr(settings, "MCP_CONFIRMATION_REQUIRED", True))
+
+
+def _looks_like_annotations(value: dict) -> bool:
+    """这个 dict 本身像不像 MCP annotations（而不是装着 annotations 的容器）。"""
+    return any(
+        k in value
+        for k in ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+    )
 
 
 def _tool_annotations(tool: object) -> dict:
-    for value in (
+    """从工具对象上挖 MCP annotations。
+
+    **实测的四种形态都要认**（`langchain-mcp-adapters` 各版本不同）：
+
+    1. `tool.annotations` 本身就是 `{"readOnlyHint": True}`
+    2. `tool.metadata` **平铺**——adapters 0.3.x 的做法：
+       `metadata = {**tool.annotations.model_dump(), "_meta": ...}`（见 `tools.py:510-513`）
+    3. `tool.metadata["annotations"]` 嵌套
+    4. `tool.metadata["mcp"]["annotations"]` 嵌套更深
+
+    第 2 种是 U5c 补的。之前只认 3/4，于是**所有 `readOnlyHint` 声明都被丢掉**，
+    只读工具只能靠名字里的动词猜——表现为「偶尔多弹一次确认」，很难被注意到。
+
+    挖不到就返回空 dict，退化成按关键词猜（保守方向）。
+    """
+    candidates = (
         getattr(tool, "annotations", None),
         getattr(tool, "metadata", None),
         getattr(tool, "extra", None),
-    ):
-        if isinstance(value, dict):
-            if isinstance(value.get("annotations"), dict):
-                return value["annotations"]
-            if isinstance(value.get("mcp"), dict) and isinstance(value["mcp"].get("annotations"), dict):
-                return value["mcp"]["annotations"]
+    )
+    for value in candidates:
+        if not isinstance(value, dict):
+            continue
+        if isinstance(value.get("annotations"), dict):
+            return value["annotations"]
+        if isinstance(value.get("mcp"), dict) and isinstance(value["mcp"].get("annotations"), dict):
+            return value["mcp"]["annotations"]
+        if _looks_like_annotations(value):
+            return value
     return {}
 
 
@@ -86,6 +120,7 @@ def _ann_bool(annotations: dict, key: str) -> bool | None:
 
 
 def is_high_risk_mcp_tool(server_name: str, tool_name: str, description: str, annotations: dict | None = None) -> bool:
+    """按 annotations 优先、关键词兜底的顺序判定是否高危。"""
     annotations = annotations or {}
     read_only = _ann_bool(annotations, "readOnlyHint")
     destructive = _ann_bool(annotations, "destructiveHint")
@@ -98,6 +133,12 @@ def is_high_risk_mcp_tool(server_name: str, tool_name: str, description: str, an
 
 
 def should_confirm_mcp_tool(server_name: str, tool: object, confirm_policy: str = "auto") -> bool:
+    """这个工具要不要人工确认。
+
+    :param tool: **原始的** MCP 工具对象。不要在 `_guard_mcp_tool_output` 之后再传——
+        那一步用 `StructuredTool.from_function` 重建了工具，annotations 会丢，
+        只读工具会被误判成高危。
+    """
     if not confirmation_required():
         return False
     policy = (confirm_policy or "auto").strip().lower()
@@ -108,160 +149,3 @@ def should_confirm_mcp_tool(server_name: str, tool: object, confirm_policy: str 
     tool_name = getattr(tool, "name", None) or "mcp_tool"
     description = getattr(tool, "description", "") or ""
     return is_high_risk_mcp_tool(server_name, tool_name, description, _tool_annotations(tool))
-
-
-def _canonical_args(payload: object) -> dict:
-    return payload if isinstance(payload, dict) else {"input": payload}
-
-
-def _args_hash(payload: object) -> str:
-    canonical = json.dumps(_canonical_args(payload), ensure_ascii=False, sort_keys=True, default=str)
-    return hashlib.sha256(canonical.encode()).hexdigest()
-
-
-def _args_preview(payload: object) -> str:
-    return json.dumps(_canonical_args(payload), ensure_ascii=False, default=str)[:800]
-
-
-def _pending_key(pending_id: str) -> str:
-    return f"mcp_pending:{pending_id}"
-
-
-def _approved_key(pending_id: str) -> str:
-    return f"mcp_approved:{pending_id}"
-
-
-def _public_pending(record: dict) -> dict:
-    return {
-        "pending_id": record.get("pending_id"),
-        "server_name": record.get("server_name"),
-        "tool_name": record.get("tool_name"),
-        "args_hash": record.get("args_hash"),
-        "args_preview": record.get("args_preview"),
-        "expires_at": record.get("expires_at"),
-    }
-
-
-def _load_approved_call(pending_id: str, *, user_id: int, agent_id: int, session_id: str, tool_name: str) -> dict | None:
-    record = cache.get_json(_approved_key(pending_id))
-    if not isinstance(record, dict):
-        return None
-    if int(record.get("user_id") or -1) != int(user_id):
-        return None
-    if int(record.get("agent_id") or -1) != int(agent_id):
-        return None
-    if str(record.get("session_id") or "default_session") != (session_id or "default_session"):
-        return None
-    if str(record.get("tool_name") or "") != tool_name:
-        return None
-    return record
-
-
-def _call_payload(args: tuple, kwargs: dict) -> object:
-    if kwargs:
-        return dict(kwargs)
-    if len(args) == 1:
-        return args[0]
-    if args:
-        return list(args)
-    return {}
-
-
-def wrap_mcp_tool_with_confirmation(tool: object, *, server_name: str, user_id: int | None, agent_id: int, session_id: str | None, confirm_policy: str = "auto") -> object:
-    if user_id is None or not session_id:
-        return tool
-    if not should_confirm_mcp_tool(server_name, tool, confirm_policy):
-        return tool
-    tool_name = getattr(tool, "name", None) or "mcp_tool"
-    description = (getattr(tool, "description", "") or "") or tool_name
-    args_schema = getattr(tool, "args_schema", None)
-
-    async def _confirmed_coro(*args, _tool=tool, **kwargs):
-        from app.core.turn_runtime import add_pending_mcp_confirmation, get_approved_mcp_pending_id
-
-        payload = _call_payload(args, kwargs)
-        approved_id = get_approved_mcp_pending_id(clear=False)
-        if approved_id:
-            approved = _load_approved_call(
-                approved_id,
-                user_id=user_id,
-                agent_id=agent_id,
-                session_id=session_id,
-                tool_name=tool_name,
-            )
-            if approved is not None:
-                get_approved_mcp_pending_id(clear=True)
-                cache.delete(_approved_key(approved_id))
-                return await _tool.ainvoke(_canonical_args(approved.get("args") or payload))
-            get_approved_mcp_pending_id(clear=True)
-
-        ttl = _confirmation_ttl()
-        pending_id = uuid.uuid4().hex
-        record = {
-            "pending_id": pending_id,
-            "user_id": user_id,
-            "agent_id": agent_id,
-            "session_id": session_id,
-            "server_name": server_name,
-            "tool_name": tool_name,
-            "args": payload,
-            "args_hash": _args_hash(payload),
-            "args_preview": _args_preview(payload),
-            "expires_at": time.time() + ttl,
-        }
-        cache.set_json(_pending_key(pending_id), record, ttl)
-        gate = add_pending_mcp_confirmation(_public_pending(record))
-        status = gate.get("status")
-        if status == "duplicate":
-            cache.delete(_pending_key(pending_id))
-            existing = gate.get("pending") or {}
-            return (
-                "MCP_" + "CONFIRMATION_REQUIRED pending_id=" + str(existing.get("pending_id")) + f" server={server_name} tool={tool_name}."
-                " A confirmation for this exact call is already pending; stop and ask the user to confirm it."
-            )
-        if status == "capped":
-            cache.delete(_pending_key(pending_id))
-            return (
-                "MCP_" + "CONFIRMATION_LIMIT_REACHED: too many high-risk MCP calls in this turn. "
-                "Do not call more MCP write tools; ask the user to narrow the request."
-            )
-        return (
-            "MCP_" + f"CONFIRMATION_REQUIRED pending_id={pending_id} server={server_name} tool={tool_name}."
-            " Stop and ask the user to confirm this exact action; do not retry until confirmed."
-        )
-
-    options = {
-        "name": tool_name,
-        "description": description,
-        "coroutine": _confirmed_coro,
-    }
-    if args_schema is not None:
-        options["args_schema"] = args_schema
-    else:
-        options["infer_schema"] = False
-    return StructuredTool.from_function(**options)
-
-
-def peek_approved_mcp_call(pending_id: str, *, user_id: int, agent_id: int, session_id: str) -> dict | None:
-    record = cache.get_json(_approved_key(pending_id))
-    if not isinstance(record, dict):
-        return None
-    if int(record.get("user_id") or -1) != int(user_id):
-        return None
-    if int(record.get("agent_id") or -1) != int(agent_id):
-        return None
-    if str(record.get("session_id") or "default_session") != (session_id or "default_session"):
-        return None
-    return record
-
-
-def approve_mcp_confirmation(pending_id: str, user_id: int, approve: bool) -> bool:
-    record = cache.get_json(_pending_key(pending_id))
-    if not isinstance(record, dict):
-        return False
-    if int(record.get("user_id") or -1) != int(user_id):
-        return False
-    if approve:
-        cache.set_json(_approved_key(pending_id), record, _confirmation_ttl())
-    cache.delete(_pending_key(pending_id))
-    return True

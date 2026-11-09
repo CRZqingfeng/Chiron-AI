@@ -159,5 +159,78 @@ class GateTests(unittest.TestCase):
         self.assertIn("排队等待超时", meta["error"])
 
 
+class JobTerminalStatusTests(unittest.TestCase):
+    """JOB-01：中断与正常完成必须能区分开。
+
+    这条曾经是坑：两者都写 `status="completed"`，任何按状态判断「做完了没」的
+    调用方都会把「等你确认」当成「干完了」。U10 基线脚本就这么误判过一次，
+    得出「代码没修」的错误结论。前端当时没受影响（它读 approval_pending），
+    所以缺陷一直没被发现——唯一的消费者恰好绕开了。
+    """
+
+    def setUp(self):
+        from app.chat import chat_job
+
+        self.fake = _FakeRedis()
+        chat_job.cache._client = self.fake  # type: ignore[attr-defined]
+        chat_job._llm_inflight_sem = None
+        chat_job._llm_inflight_waiting = 0
+
+    def tearDown(self):
+        from app.chat import chat_job
+
+        chat_job._llm_inflight_sem = None
+        chat_job._llm_inflight_waiting = 0
+
+    def _run(self, stream):
+        from app.chat import chat_job
+
+        async def _scenario():
+            patches = [
+                mock.patch.object(
+                    chat_job, "get_accessible_agent", new=mock.AsyncMock(return_value=object())
+                ),
+                mock.patch.object(chat_job, "iter_chat_stream_events", stream),
+                mock.patch(
+                    "app.services.user_agent_recent.touch_recent_agent", new=mock.AsyncMock()
+                ),
+            ]
+            for p in patches:
+                p.start()
+            try:
+                await chat_job._run_chat_job(
+                    job_id="jt1",
+                    user_id=1,
+                    agent_id=2,
+                    session_id="s1",
+                    message="hi",
+                    use_knowledge_retrieval=False,
+                )
+            finally:
+                for p in patches:
+                    p.stop()
+
+        asyncio.run(_scenario())
+        return _meta(self.fake, "jt1")
+
+    def test_interrupted_job_has_its_own_status(self):
+        async def _interrupted_stream(*_a, **_k):
+            yield {"type": "content", "content": "做到一半"}
+            yield {"type": "done", "cancelled": False, "interrupted": True, "message_id": 7}
+
+        meta = self._run(_interrupted_stream)
+        self.assertEqual(meta["status"], "interrupted")
+        self.assertTrue(meta["interrupted"])
+
+    def test_normal_completion_is_not_marked_interrupted(self):
+        async def _normal_stream(*_a, **_k):
+            yield {"type": "content", "content": "答完了"}
+            yield {"type": "done", "cancelled": False, "interrupted": False}
+
+        meta = self._run(_normal_stream)
+        self.assertEqual(meta["status"], "completed")
+        self.assertFalse(meta["interrupted"])
+
+
 if __name__ == "__main__":
     unittest.main()

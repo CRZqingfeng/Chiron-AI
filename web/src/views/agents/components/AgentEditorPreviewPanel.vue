@@ -66,7 +66,6 @@
                 m.errorText,
                 m.stoppedByUser,
                 m.sources,
-                m.mcpConfirmations,
                 m.ragTrace,
               ]"
               class="agent-chat-feed-item"
@@ -187,37 +186,6 @@
                       role="status"
                     >
                       {{ $t('views.agents.chat_msg_aborted') }}
-                    </div>
-                    <div v-if="m.mcpConfirmations?.length" class="agent-chat-mcp-confirm">
-                      <div
-                        v-for="item in m.mcpConfirmations"
-                        :key="item.pending_id"
-                        class="agent-chat-mcp-confirm-item"
-                      >
-                        <div class="agent-chat-mcp-confirm-title">高危 MCP 工具调用确认</div>
-                        <div class="agent-chat-mcp-confirm-text">
-                          {{ item.server_name }} / {{ item.tool_name }}
-                        </div>
-                        <pre class="agent-chat-mcp-confirm-args">{{ item.args_preview }}</pre>
-                        <div class="agent-chat-mcp-confirm-actions">
-                          <n-button
-                            size="tiny"
-                            type="primary"
-                            :disabled="sending || confirmingMcpIds.has(item.pending_id)"
-                            @click="approveMcpConfirmation(m, item, true)"
-                          >
-                            允许一次
-                          </n-button>
-                          <n-button
-                            size="tiny"
-                            quaternary
-                            :disabled="sending || confirmingMcpIds.has(item.pending_id)"
-                            @click="approveMcpConfirmation(m, item, false)"
-                          >
-                            拒绝
-                          </n-button>
-                        </div>
-                      </div>
                     </div>
                     <div
                       v-if="!m.pending && (m.content || '').trim()"
@@ -383,8 +351,6 @@ const {
   sendMessage,
   stopGeneration,
   toggleThinking,
-  approveMcpConfirmation,
-  confirmingMcpIds,
 } = useAgentPreviewChat({
   agentId: resolvedAgentId,
   sessionId,

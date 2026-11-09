@@ -130,6 +130,7 @@ async def request_chat_job_cancel(job_id: str) -> None:
         return
     meta["status"] = "cancelled"
     meta["error"] = None
+    meta["interrupted"] = False
     await asyncio.to_thread(cache.set_json, _meta_key(job_id), meta, _ttl())
     await asyncio.to_thread(
         _release_active_key,
@@ -267,6 +268,8 @@ async def _reap_dead_job(job_id: str, meta: dict[str, Any]) -> None:
     try:
         meta["status"] = status
         meta["error"] = None if cancelled else _ORPHAN_REASON
+        # 进程死了就谈不上「停在断点等人确认」，避免旧值让人误以为还能 resume
+        meta["interrupted"] = False
         await asyncio.to_thread(cache.set_json, _meta_key(job_id), meta, _done_ttl())
         await asyncio.to_thread(cache.expire, _events_key(job_id), _done_ttl())
         await asyncio.to_thread(cache.delete, _cancel_key(job_id))
@@ -307,7 +310,6 @@ async def create_chat_job(
     attachment_ids: list[str] | None = None,
     regenerate: bool = False,
     target_message_id: int | None = None,
-    mcp_approved_pending_id: str | None = None,
     resume_thread_id: str | None = None,
     resume_decision: str | None = None,
 ) -> tuple[str, bool]:
@@ -373,7 +375,6 @@ async def create_chat_job(
             attachment_ids=aids,
             regenerate=regenerate,
             target_message_id=target_message_id,
-            mcp_approved_pending_id=mcp_approved_pending_id,
             resume_thread_id=resume_thread_id,
             resume_decision=resume_decision,
         )
@@ -393,7 +394,6 @@ async def _run_chat_job(
     attachment_ids: list[str] | None = None,
     regenerate: bool = False,
     target_message_id: int | None = None,
-    mcp_approved_pending_id: str | None = None,
     resume_thread_id: str | None = None,
     resume_decision: str | None = None,
 ) -> None:
@@ -422,6 +422,10 @@ async def _run_chat_job(
             return
 
         user_cancelled = False
+        # 审批中断：图停在断点等人确认。它与「正常完成」是两件事（JOB-01）——
+        # 之前两者共用 status=completed，按状态判断完成的调用方会把
+        # 「等你确认」当成「干完了」，基线脚本就这么误判过一次。
+        interrupted = False
         gate = _llm_inflight()
         global _llm_inflight_waiting
         # 闸门已满时先给前端一条排队事件（含等待人数），避免 running 状态下长时间零反馈
@@ -452,7 +456,6 @@ async def _run_chat_job(
                 regenerate=regenerate,
                 target_message_id=target_message_id,
                 cancel_check=lambda jid=job_id: is_job_cancel_requested(jid),
-                mcp_approved_pending_id=mcp_approved_pending_id,
                 # 审批恢复：thread 指原 job 的 checkpoint，decision 决定批准/拒绝
                 resume_thread_id=resume_thread_id,
                 resume_decision=resume_decision,
@@ -483,6 +486,8 @@ async def _run_chat_job(
                     snapshot_at = time.monotonic()
                 if ev.get("type") == "done" and ev.get("cancelled"):
                     user_cancelled = True
+                if ev.get("type") == "done" and ev.get("interrupted"):
+                    interrupted = True
         finally:
             _llm_inflight_waiting -= 1
             if acquired:
@@ -497,6 +502,19 @@ async def _run_chat_job(
                 agent_id=agent_id,
                 session_id=session_id,
                 kind=KIND_CANCELLED,
+                text_parts=text_parts,
+            )
+        elif interrupted:
+            # 断点还在 checkpoint 里等 resume，job 本身已经停下。
+            # 快照 kind 仍用 KIND_DONE：那是「本轮终态」的分类，不是「正常完成」。
+            await _finish_meta(job_id, status="interrupted", error=None, interrupted=True)
+            await _save_terminal_snapshot(
+                job_id,
+                seq,
+                user_id=user_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                kind=KIND_DONE,
                 text_parts=text_parts,
             )
         else:
@@ -544,15 +562,21 @@ async def _run_chat_job(
         await asyncio.to_thread(_release_active_key, user_id, agent_id, session_id, job_id)
 
 
-async def _finish_meta(job_id: str, *, status: str, error: str | None) -> None:
+async def _finish_meta(
+    job_id: str, *, status: str, error: str | None, interrupted: bool = False
+) -> None:
     """
     完成任务：终态后改用较短的 done TTL，避免事件列表在 Redis 中留存 24h。
+
+    `interrupted` 与 `status` 分开存：调用方可能只看其中一个，
+    两个地方都能看出「这轮是被审批断点停下的」。
     """
     meta = await asyncio.to_thread(cache.get_json, _meta_key(job_id))
     if not isinstance(meta, dict):
         meta = {"job_id": job_id}
     meta["status"] = status
     meta["error"] = error
+    meta["interrupted"] = bool(interrupted)
     ttl = _done_ttl()
     await asyncio.to_thread(cache.set_json, _meta_key(job_id), meta, ttl)
     await asyncio.to_thread(cache.expire, _events_key(job_id), ttl)

@@ -244,6 +244,7 @@
       "chat_approval_reject": "Reject",
       "chat_approval_hint": "Once allowed, it resumes from where it paused — completed steps are not re-run.",
       "chat_approval_stale": "This approval is no longer valid. Please refresh and try again.",
+      "chat_approval_legacy": "This confirmation came from an older MCP approval flow and can no longer be resumed. Please run the request again.",
       "chat_msg_restart_ok": "Started a new conversation",
       "chat_msg_like_ok": "Thanks for your feedback",
       "chat_error_load_agent": "Failed to load agent",

@@ -36,7 +36,11 @@ class ChatRequest(BaseModel):
     )
     mcp_approved_pending_id: Optional[str] = Field(
         None,
-        description="用户已确认的高危 MCP 调用 pending_id；续跑时按该记录执行一次",
+        deprecated=True,
+        description=(
+            "【已废弃，U5c】MCP 高危工具已统一走审批中断（resume_decision / resume_thread_id）。"
+            "保留该字段只为不把旧客户端的请求打成 422；后端不解它。"
+        ),
     )
     resume_thread_id: Optional[str] = Field(
         None,
@@ -128,13 +132,6 @@ class ChatAttachmentUploadResponse(BaseModel):
     kind: str
     mime: str
     size_bytes: int
-
-
-class McpConfirmRequest(BaseModel):
-    """高危 MCP 工具调用确认。"""
-
-    pending_id: str = Field(..., min_length=8, max_length=64)
-    approve: bool = True
 
 
 class BranchSelectRequest(BaseModel):

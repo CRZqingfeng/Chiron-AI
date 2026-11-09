@@ -197,7 +197,6 @@ class PromptFidelityTests(_Base):
             document_filter=None,
             session_attachment_hint="",
             memory_inject=None,
-            mcp_approval_note=None,
             image_caption=None,
         )
         self.assertIn("本轮允许调用 search_knowledge_base", block)

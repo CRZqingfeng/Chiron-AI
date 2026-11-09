@@ -85,14 +85,21 @@ export function mapHistoryRow(row, i, t) {
   // 后端存在 mg_chat_messages.approval_pending，由 MessageInfo 透传上来。
   if (row.approval_pending) {
     const ap = row.approval_pending
-    base.approvalPending = {
-      interruptId: ap.interrupt_id || null,
-      actions: Array.isArray(ap.actions) ? ap.actions : [],
-      allowedDecisions: Array.isArray(ap.allowed_decisions)
-        ? ap.allowed_decisions
-        : ['approve', 'reject'],
-      threadId: ap.thread_id || null,
-      messageId: row.message_id ?? null,
+    // U5c 之前 MCP 高危调用落的是「假审批」记录：有 pending_id、没有 thread_id，
+    // 票据存活在 Redis（TTL 300s）而不是 checkpoint。这类记录已经无从恢复——
+    // 刷新页面也不会变好，所以不能提示「请刷新重试」，要说清真相。
+    if (ap.pending_id && !ap.thread_id) {
+      base.approvalLegacy = true
+    } else {
+      base.approvalPending = {
+        interruptId: ap.interrupt_id || null,
+        actions: Array.isArray(ap.actions) ? ap.actions : [],
+        allowedDecisions: Array.isArray(ap.allowed_decisions)
+          ? ap.allowed_decisions
+          : ['approve', 'reject'],
+        threadId: ap.thread_id || null,
+        messageId: row.message_id ?? null,
+      }
     }
   }
   return base
@@ -228,7 +235,7 @@ export function useChatMessages({
       // 有待确认的调用（MCP 或工具审批）时跳过重拉：历史行会覆盖掉确认卡片，
       // 用户就再也点不到「允许」了
       const row = messages.value[assistantIdx]
-      if (!streamStoppedByUser.value && !row?.mcpConfirmations?.length && !row?.approvalPending) {
+      if (!streamStoppedByUser.value && !row?.approvalPending) {
         await reloadSessionMessages(agentId)
       }
     } catch (error) {

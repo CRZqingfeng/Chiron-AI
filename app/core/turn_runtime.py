@@ -1,7 +1,7 @@
 """每轮 agent 运行时状态（原 `app/chat/tools.py`）。
 
 为什么在 `app/core` 而不在 `app/chat`：这份状态被三方共用——`app/chat`（工具实现）、
-`app/kb`（检索流程要 emit RAG 步骤）、`app/mcp_client`（待确认 MCP 调用）。
+`app/kb`（检索流程要 emit RAG 步骤）。
 放在 `app/chat` 下会让知识库反向依赖对话域，故下沉为中性基础设施。
 
 知识库/记忆/联网检索的具体工具由各自模块动态绑定，这里只管状态与配额。
@@ -34,8 +34,6 @@ class _RequestState:
         "fetch_url_calls",
         "rag_step_queue",
         "rag_step_loop",
-        "pending_mcp_confirmations",
-        "approved_mcp_pending_id",
         "allow_knowledge_retrieval",
         "allow_web_search",
         "session_scope",
@@ -52,8 +50,6 @@ class _RequestState:
         self.fetch_url_calls = 0
         self.rag_step_queue: Any = None
         self.rag_step_loop: asyncio.AbstractEventLoop | None = None
-        self.pending_mcp_confirmations: list[dict] = []
-        self.approved_mcp_pending_id: str | None = None
         self.allow_knowledge_retrieval = True
         self.allow_web_search = False
         # 「用户×智能体×会话」标识。审批中间件靠它判断「本会话是否已授权跑测试」——
@@ -84,42 +80,6 @@ def get_last_rag_context(clear: bool = True) -> Optional[dict]:
     if clear:
         state.last_rag_context = None
     return context
-
-
-def add_pending_mcp_confirmation(pending: dict) -> dict:
-    from app.settings import settings
-
-    state = _state()
-    items = state.pending_mcp_confirmations
-    key = (pending.get("tool_name"), pending.get("args_hash"))
-    for item in items:
-        if (item.get("tool_name"), item.get("args_hash")) == key:
-            return {"status": "duplicate", "pending": item}
-    max_n = max(1, int(getattr(settings, "MCP_" + "CONFIRMATION_MAX_PER_TURN", 3)))
-    if len(items) >= max_n:
-        return {"status": "capped"}
-    items.append(dict(pending))
-    return {"status": "added", "pending": pending}
-
-
-def get_pending_mcp_confirmations(clear: bool = True) -> list[dict]:
-    state = _state()
-    items = list(state.pending_mcp_confirmations)
-    if clear:
-        state.pending_mcp_confirmations = []
-    return items
-
-
-def set_approved_mcp_pending_id(pending_id: str | None) -> None:
-    _state().approved_mcp_pending_id = (pending_id or "").strip() or None
-
-
-def get_approved_mcp_pending_id(clear: bool = True) -> str | None:
-    state = _state()
-    pending_id = state.approved_mcp_pending_id
-    if clear:
-        state.approved_mcp_pending_id = None
-    return pending_id
 
 
 def reset_tool_call_guards() -> None:

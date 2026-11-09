@@ -188,8 +188,7 @@ export function useChatJobStream({
         mcpExecuting: false,
         thinkingOpen: row.thinkingOpen ?? false,
         ragTrace: row.ragTrace ?? null,
-        errorText:
-          data.kind === 'snapshot' ? '连接中断，以上为已生成的部分内容' : undefined,
+        errorText: data.kind === 'snapshot' ? '连接中断，以上为已生成的部分内容' : undefined,
       }
       flushRenderVersion(messages.value[idx])
     } else if (data.type === 'content') {
@@ -275,23 +274,9 @@ export function useChatJobStream({
         errorText: undefined,
       }
       flushRenderVersion(messages.value[idx])
-    } else if (data.type === 'mcp_confirmation_required') {
-      const cur = messages.value[idx]
-      const item = data.confirmation || {}
-      const list = Array.isArray(cur.mcpConfirmations) ? cur.mcpConfirmations : []
-      if (item.pending_id && !list.some((x) => x.pending_id === item.pending_id)) {
-        list.push(item)
-      }
-      messages.value[idx] = {
-        ...cur,
-        mcpConfirmations: list,
-        pending: cur.pending,
-      }
     } else if (data.type === 'approval_required') {
       // 工具审批中断：图停在「模型已产出 tool_calls、工具尚未执行」的位置。
-      // 与 MCP 的 mcpConfirmations 分开存：两者字段结构完全不同
-      // （这里是 interrupt_id + actions[]，MCP 是 pending_id + args_preview），
-      // 合并会让模板到处是 if 分支。
+      // U5c 起 MCP 高危工具也走这条路，不再有独立的 mcp_confirmation_required。
       const cur = messages.value[idx]
       const req = data.request || {}
       const actions = Array.isArray(req.actions) ? req.actions : []
@@ -454,7 +439,6 @@ export function useChatJobStream({
     message,
     attachmentIds,
     assistantIdx,
-    mcpApprovedPendingId = null,
     targetMessageId = null,
     resumeThreadId = null,
     resumeDecision = null,
@@ -484,7 +468,6 @@ export function useChatJobStream({
             attachment_ids: attachmentIds,
             regenerate,
             target_message_id: targetMessageId || undefined,
-            mcp_approved_pending_id: mcpApprovedPendingId || undefined,
             // 审批恢复：thread 指向原 job 的 checkpoint，decision 决定批准/拒绝。
             // 后端据此走 `Command(resume=...)`，不会重复已完成的步骤。
             resume_thread_id: resumeThreadId || undefined,
@@ -668,7 +651,6 @@ export function useChatJobStream({
       if (
         pj.regenerate &&
         !streamStoppedByUser.value &&
-        !messages.value[idx]?.mcpConfirmations?.length &&
         // 审批待确认时不能重拉：历史行会覆盖掉刚广播进来的 approvalPending
         !messages.value[idx]?.approvalPending
       ) {

@@ -278,7 +278,6 @@ class CaptionPrepareTests(unittest.TestCase):
             document_filter=None,
             session_attachment_hint="",
             memory_inject=None,
-            mcp_approval_note=None,
             image_caption="长" * 5000,
         )
         self.assertIn("已截断", block)

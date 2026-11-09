@@ -244,6 +244,7 @@
       "chat_approval_reject": "拒绝",
       "chat_approval_hint": "允许后将继续执行，已完成的步骤不会重跑。",
       "chat_approval_stale": "审批信息已失效，请刷新页面后重试",
+      "chat_approval_legacy": "这条确认来自旧版本的 MCP 审批，已无法恢复。需要的话请重新发起请求。",
       "chat_msg_restart_ok": "已开启新对话",
       "chat_msg_like_ok": "感谢反馈",
       "chat_error_load_agent": "加载智能体失败",

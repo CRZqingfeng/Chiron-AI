@@ -21,10 +21,8 @@
         :agent-name="agentName"
         :sending="sending"
         :switching-branch="switchingBranch"
-        :confirming-mcp-ids="confirmingMcpIds"
         :approving-ids="approvingIds"
         @toggle-thinking="$emit('toggle-thinking', $event)"
-        @mcp-approve="(msg, item, approve) => $emit('mcp-approve', msg, item, approve)"
         @approval-decide="(msg, decision) => $emit('approval-decide', msg, decision)"
         @md-click="$emit('md-click', $event)"
         @switch-version="(msg, dir) => $emit('switch-version', msg, dir)"
@@ -49,13 +47,11 @@ defineProps({
   agentName: { type: String, default: '—' },
   sending: { type: Boolean, default: false },
   switchingBranch: { type: Boolean, default: false },
-  confirmingMcpIds: { type: Object, default: () => new Set() },
   approvingIds: { type: Object, default: () => new Set() },
 })
 
 const emit = defineEmits([
   'toggle-thinking',
-  'mcp-approve',
   'approval-decide',
   'md-click',
   'switch-version',

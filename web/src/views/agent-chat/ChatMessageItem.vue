@@ -148,36 +148,14 @@
           >
             {{ $t('views.agents.chat_msg_aborted') }}
           </div>
-          <div v-if="message.mcpConfirmations?.length" class="agent-chat-mcp-confirm">
-            <div
-              v-for="item in message.mcpConfirmations"
-              :key="item.pending_id"
-              class="agent-chat-mcp-confirm-item"
-            >
-              <div class="agent-chat-mcp-confirm-title">高危 MCP 工具调用确认</div>
-              <div class="agent-chat-mcp-confirm-text">
-                {{ item.server_name }} / {{ item.tool_name }}
-              </div>
-              <pre class="agent-chat-mcp-confirm-args">{{ item.args_preview }}</pre>
-              <div class="agent-chat-mcp-confirm-actions">
-                <n-button
-                  size="tiny"
-                  type="primary"
-                  :disabled="sending || confirmingMcpIds.has(item.pending_id)"
-                  @click="emit('mcp-approve', message, item, true)"
-                >
-                  允许一次
-                </n-button>
-                <n-button
-                  size="tiny"
-                  quaternary
-                  :disabled="sending || confirmingMcpIds.has(item.pending_id)"
-                  @click="emit('mcp-approve', message, item, false)"
-                >
-                  拒绝
-                </n-button>
-              </div>
-            </div>
+          <!-- U5c 之前的 MCP 假审批记录：票据存活在 Redis（5 分钟），早就没了。
+               不能提示「请刷新重试」——刷新不会变好，只会让用户反复试。 -->
+          <div
+            v-if="message.approvalLegacy && !message.pending"
+            class="agent-chat-msg-stopped"
+            role="status"
+          >
+            {{ $t('views.agents.chat_approval_legacy') }}
           </div>
           <div
             v-if="message.approvalPending?.actions?.length"
@@ -383,13 +361,11 @@ const props = defineProps({
   agentName: { type: String, default: '—' },
   sending: { type: Boolean, default: false },
   switchingBranch: { type: Boolean, default: false },
-  confirmingMcpIds: { type: Object, default: () => new Set() },
   approvingIds: { type: Object, default: () => new Set() },
 })
 
 const emit = defineEmits([
   'toggle-thinking',
-  'mcp-approve',
   'approval-decide',
   'md-click',
   'switch-version',

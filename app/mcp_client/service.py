@@ -8,7 +8,7 @@ import logging
 
 from app.chat.tool_registry import BUILTIN_TOOL_NAMES as _BUILTIN_TOOL_NAMES
 from app.chat.tool_registry import RESERVED_TOOL_NAMES as _RESERVED_TOOL_NAMES
-from app.mcp_client.tool_policy import wrap_mcp_tool_with_confirmation
+from app.mcp_client.tool_policy import should_confirm_mcp_tool
 from typing import Any
 
 MCP_CONNECT_TIMEOUT_SECONDS = 12
@@ -199,30 +199,33 @@ def _guard_mcp_tool_output(tool: Any) -> Any:
     )
 
 
-async def load_agent_mcp_tools(
-    agent_id: int,
-    *,
-    user_id: int | None = None,
-    session_id: str | None = None,
-) -> tuple[list, list[dict]]:
+async def load_agent_mcp_tools(agent_id: int) -> tuple[list, list[dict], set[str]]:
     """
     加载指定智能体全部已启用 MCP 服务的 LangChain 工具。
     单个服务连接失败仅记录错误、不中断对话；工具名与内置工具或彼此冲突时跳过。
-    :return: (tools, errors)；errors 元素 {"name": 服务名, "error": 错误说明}
+
+    :return: `(tools, errors, confirm_names)`
+        - errors 元素 `{"name": 服务名, "error": 错误说明}`
+        - confirm_names：**需要人工确认的工具名集合**。调用方拿它去填
+          `interrupt_on`（U5c）。必须由本函数返回而不是让调用方自己算，因为
+          `confirm_policy` 是**按服务行配的**（`UserAgentMcpServer.confirm_policy`），
+          工具对象不携带这个信息，调用方无从判定。
     """
     from app.core.cache import cache
     from app.models.user_agent_mcp import UserAgentMcpServer
 
     rows = await UserAgentMcpServer.filter(agent_id=agent_id, enabled=True).all()
     if not rows:
-        return [], []
+        return [], [], set()
 
     all_tools: list = []
     errors: list[dict] = []
+    confirm_names: set[str] = set()
     seen_names: set[str] = set(_BUILTIN_TOOL_NAMES) | set(_RESERVED_TOOL_NAMES)
 
     for row in rows:
         schema_key = mcp_tool_schema_cache_key(agent_id, row.id)
+        confirm_policy = getattr(row, "confirm_policy", "auto") or "auto"
         try:
             tools = await _list_tools(row.transport, row.url, decrypt_headers(row.headers_ciphertext))
             cache.set_json(schema_key, _snapshot_mcp_tools(tools), MCP_TOOL_SCHEMA_TTL_SECONDS)
@@ -248,16 +251,11 @@ async def load_agent_mcp_tools(
                 )
                 continue
             seen_names.add(tname)
-            guarded = _guard_mcp_tool_output(t)
-            all_tools.append(
-                wrap_mcp_tool_with_confirmation(
-                    guarded,
-                    server_name=row.name,
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    session_id=session_id,
-                    confirm_policy=getattr(row, "confirm_policy", "auto") or "auto",
-                )
-            )
+            # 判定必须在 `_guard_mcp_tool_output` **之前**：它用 StructuredTool 重建工具，
+            # annotations 会丢，之后再判定就只能看到 name/description（`readOnlyHint`
+            # 这类显式标注失效，只读工具会被误判成高危）。
+            if should_confirm_mcp_tool(row.name, t, confirm_policy):
+                confirm_names.add(tname)
+            all_tools.append(_guard_mcp_tool_output(t))
     all_tools.sort(key=lambda t: str(getattr(t, "name", "") or ""))
-    return all_tools, errors
+    return all_tools, errors, confirm_names

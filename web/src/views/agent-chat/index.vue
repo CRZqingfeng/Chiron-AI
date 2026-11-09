@@ -49,10 +49,8 @@
                   :agent-name="agent?.name || '—'"
                   :sending="sending"
                   :switching-branch="switchingBranch"
-                  :confirming-mcp-ids="confirmingMcpIds"
                   :approving-ids="approvingIds"
                   @toggle-thinking="toggleThinking"
-                  @mcp-approve="approveMcpConfirmation"
                   @approval-decide="decideApproval"
                   @md-click="onAgentMdClick"
                   @switch-version="switchAssistantVersion"
@@ -222,7 +220,6 @@ import { useChatSession } from './useChatSession.js'
 import { useChatComposer, MAX_CHAT_ATTACHMENTS, chatAttachmentIcon } from './useChatComposer.js'
 import { useChatJobStream, clearPendingChatJob } from './useChatJobStream.js'
 import { useChatMessages } from './useChatMessages.js'
-import { useChatMcpConfirm } from './useChatMcpConfirm.js'
 import { useChatApproval } from './useChatApproval.js'
 import api from '@/api'
 import { getToken } from '@/utils'
@@ -253,7 +250,6 @@ const sessionPhase = ref('intro')
 const messages = ref([])
 const inputText = ref('')
 const sending = ref(false)
-const confirmingMcpIds = ref(new Set())
 const showWorkspace = ref(false)
 const {
   sessionId,
@@ -342,17 +338,6 @@ const {
   streamStoppedByUser,
 })
 jobReload.fn = reloadSessionMessages
-
-const { approveMcpConfirmation } = useChatMcpConfirm({
-  messages,
-  sending,
-  confirmingMcpIds,
-  chatAgentId,
-  scrollBodyToBottom,
-  postChatJobAndConsumeStream,
-  getToken,
-  t,
-})
 
 const { decideApproval, approvingIds } = useChatApproval({
   messages,
@@ -722,12 +707,8 @@ async function submitMessage() {
       assistantIdx: idx,
     })
     // 完成后重拉当前分支：新行拿到真实 messageId，才能重新生成/切版本
-    // （存在待确认的 MCP 调用 / 工具审批时跳过重拉，避免确认按钮被历史行覆盖丢失）
-    if (
-      !streamStoppedByUser.value &&
-      !messages.value[idx]?.mcpConfirmations?.length &&
-      !messages.value[idx]?.approvalPending
-    ) {
+    // （存在待确认的工具审批时跳过重拉，避免确认按钮被历史行覆盖丢失）
+    if (!streamStoppedByUser.value && !messages.value[idx]?.approvalPending) {
       await reloadSessionMessages(agentId)
     }
   } catch (error) {
@@ -1764,49 +1745,6 @@ html.dark .agent-chat-msg-stopped {
 
 html.dark .agent-chat-md {
   color: rgba(255, 255, 255, 0.88);
-}
-
-/* 高危 MCP 工具调用确认卡 */
-.agent-chat-mcp-confirm {
-  margin-bottom: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.agent-chat-mcp-confirm-item {
-  border: 1px solid rgba(245, 158, 11, 0.45);
-  background: rgba(245, 158, 11, 0.08);
-  border-radius: 8px;
-  padding: 10px 12px;
-  box-sizing: border-box;
-}
-
-.agent-chat-mcp-confirm-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--n-warning-color);
-  margin-bottom: 4px;
-}
-
-.agent-chat-mcp-confirm-text {
-  font-size: 13px;
-  margin-bottom: 6px;
-}
-
-.agent-chat-mcp-confirm-args {
-  margin: 0 0 8px;
-  max-height: 160px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 12px;
-  color: var(--n-text-color-3);
-}
-
-.agent-chat-mcp-confirm-actions {
-  display: flex;
-  gap: 8px;
 }
 
 /* 知识库来源列表 */

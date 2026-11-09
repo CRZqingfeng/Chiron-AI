@@ -26,7 +26,6 @@ export function useAgentPreviewChat({
   const activeJobId = ref(null)
   const activeAssistantIdx = ref(-1)
   const streamStoppedByUser = ref(false)
-  const confirmingMcpIds = ref(new Set())
 
   function resetChat() {
     stopGeneration()
@@ -86,13 +85,7 @@ export function useAgentPreviewChat({
     sending.value = false
   }
 
-  async function postJobAndConsumeStream({
-    regenerate,
-    message,
-    attachmentIds,
-    assistantIdx,
-    mcpApprovedPendingId = null,
-  }) {
+  async function postJobAndConsumeStream({ regenerate, message, attachmentIds, assistantIdx }) {
     const aid = unref(agentId)
     const sid = unref(sessionId)
     const token = getToken()
@@ -120,7 +113,6 @@ export function useAgentPreviewChat({
             use_web_search: unref(useWebSearch),
             attachment_ids: attachmentIds,
             regenerate,
-            mcp_approved_pending_id: mcpApprovedPendingId || undefined,
           }),
           signal: ac.signal,
         })
@@ -272,67 +264,6 @@ export function useAgentPreviewChat({
     }
   }
 
-  async function approveMcpConfirmation(assistantMsg, item, approve) {
-    const aid = unref(agentId)
-    const token = getToken()
-    if (!aid || !token || !item?.pending_id) return
-    const idx = messages.value.findIndex((x) => x.id === assistantMsg.id)
-    if (confirmingMcpIds.value.has(item.pending_id)) return
-    confirmingMcpIds.value = new Set([...confirmingMcpIds.value, item.pending_id])
-    try {
-      const res = await fetch(`${baseApi}/user-agent/chat/mcp/confirm`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', token },
-        body: JSON.stringify({ pending_id: item.pending_id, approve }),
-      })
-      if (!res.ok) {
-        let detail = `HTTP ${res.status}`
-        try {
-          const body = await res.json()
-          detail = body.detail || body.msg || detail
-        } catch {
-          /* ignore */
-        }
-        throw new Error(detail)
-      }
-      if (idx !== -1) {
-        const row = messages.value[idx]
-        messages.value[idx] = {
-          ...row,
-          mcpConfirmations: (row.mcpConfirmations || []).filter(
-            (x) => x.pending_id !== item.pending_id
-          ),
-        }
-      }
-      if (approve && idx !== -1) {
-        const row = messages.value[idx]
-        messages.value[idx] = {
-          ...row,
-          errorText: undefined,
-          stoppedByUser: false,
-          pending: true,
-          mcpExecuting: true,
-        }
-        sending.value = true
-        await postJobAndConsumeStream({
-          regenerate: true,
-          message: '',
-          attachmentIds: [],
-          assistantIdx: idx,
-          mcpApprovedPendingId: item.pending_id,
-        })
-      }
-    } catch (error) {
-      window.$message?.error(`${error?.message || error}`)
-    } finally {
-      const next = new Set(confirmingMcpIds.value)
-      next.delete(item.pending_id)
-      confirmingMcpIds.value = next
-      sending.value = false
-    }
-  }
-
   function toggleThinking(msg) {
     const idx = messages.value.findIndex((m) => m.id === msg.id)
     if (idx === -1) return
@@ -351,7 +282,5 @@ export function useAgentPreviewChat({
     sendMessage,
     stopGeneration,
     toggleThinking,
-    approveMcpConfirmation,
-    confirmingMcpIds,
   }
 }
