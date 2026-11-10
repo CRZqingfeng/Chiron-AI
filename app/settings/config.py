@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     EGRESS_PIN_DNS: bool = True
     # uvicorn 监听地址；公网请放在反代后并保持 127.0.0.1
     UVICORN_HOST: str = "127.0.0.1"
+    # ★ 原为硬编码在 run.py 的 9999 —— 该端口落在 Windows 保留段 9918-10017 内，
+    #   绑定报 WinError 10013。改为可配置，默认 19999（远离动态端口分配区）。
+    UVICORN_PORT: int = 19999
     # 为 False 时关闭 /docs /redoc /openapi.json（公网建议 false）
     DOCS_ENABLED: bool = True
     # 媒体签名 URL 有效期（秒）；历史会话返回时会重签

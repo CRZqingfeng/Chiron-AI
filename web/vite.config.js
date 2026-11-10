@@ -1,3 +1,5 @@
+import { resolve } from 'node:path'
+
 import { defineConfig, loadEnv } from 'vite'
 
 import { convertEnv, getSrcPath, getRootPath } from './build/utils'
@@ -13,6 +15,11 @@ export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd())
   const viteEnv = convertEnv(env)
   const { VITE_PORT, VITE_PUBLIC_PATH, VITE_USE_PROXY, VITE_BASE_API } = viteEnv
+
+  // ★ 后端端口与后端共用根目录 .env 的 UVICORN_PORT —— 改端口只需改这一处。
+  //   否则会出现「只改了后端、前端 proxy 还指着旧端口 → 页面能开但接口全 502」。
+  const serverEnv = loadEnv(mode, resolve(process.cwd(), '..'), '')
+  const backendPort = serverEnv.UVICORN_PORT || 19999
 
   return {
     base: VITE_PUBLIC_PATH || '/',
@@ -30,7 +37,10 @@ export default defineConfig(({ command, mode }) => {
       open: true,
       proxy: VITE_USE_PROXY
         ? {
-            [VITE_BASE_API]: PROXY_CONFIG[VITE_BASE_API],
+            [VITE_BASE_API]: {
+              ...PROXY_CONFIG[VITE_BASE_API],
+              target: `http://127.0.0.1:${backendPort}`,
+            },
           }
         : undefined,
     },

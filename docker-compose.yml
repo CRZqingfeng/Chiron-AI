@@ -59,8 +59,8 @@ services:
       # 宿主端口原为 9100/9101，2026-11-06 重启后落入 Windows 保留段 9081–9180（绑定报
       # "attempt to access a socket in a way forbidden"），故改到 9310/9311。
       # 容器内部仍走 minio:9000/9001，Milvus 经容器网络访问，不受宿主端口影响。
-      - "127.0.0.1:9311:9001"
-      - "127.0.0.1:9310:9000"
+      - "127.0.0.1:19311:9001"
+      - "127.0.0.1:19310:9000"
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
     command: minio server /minio_data --console-address ":9001"
@@ -110,7 +110,7 @@ services:
     ports:
       - "127.0.0.1:19530:19530"
       # 9091 同样落入 Windows 保留段 9081–9180（2026-11-06 重启后），改到 9391
-      - "127.0.0.1:9391:9091"
+      - "127.0.0.1:19391:9091"
     depends_on:
       - "etcd"
   attu:
@@ -122,7 +122,10 @@ services:
     ports:
       - "127.0.0.1:8080:3000"
     depends_on:
-      - standalone
+      # ★ 必须等 Milvus 健康再起：depends_on 的列表写法只保证"容器已创建"，
+      #   而 Milvus 冷启动要 30-90s 加载元数据。原来 attu 抢跑 → 连不上 → 静默 Exited(1)。
+      standalone:
+        condition: service_healthy
     networks:
       - default  
 

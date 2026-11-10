@@ -21,7 +21,7 @@ if __name__ == "__main__":
         # ASGI 应用对象移到了 app/main.py（详见该文件顶部注释）
         "app.main:app",
         host=host,
-        port=9999,
+        port=int(getattr(settings, "UVICORN_PORT", 19999)),
         reload=bool(settings.DEBUG),
         log_config=None,
     )
