@@ -1,0 +1,213 @@
+{
+  "src": "D:\\develop\\develop\\code\\GitHub-Project\\Chiron-AI-main\\Chiron-AI-main\\消息树动画讲解.html",
+  "url": "file:///D:/develop/develop/code/GitHub-Project/Chiron-AI-main/Chiron-AI-main/%E6%B6%88%E6%81%AF%E6%A0%91%E5%8A%A8%E7%94%BB%E8%AE%B2%E8%A7%A3.html",
+  "outdir": "D:\\develop\\develop\\code\\GitHub-Project\\Chiron-AI-main\\Chiron-AI-main\\_shots",
+  "include": [
+    "lint",
+    "screenshots",
+    "structure"
+  ],
+  "shots": {
+    "desktop": {
+      "screenshot": "D:\\develop\\develop\\code\\GitHub-Project\\Chiron-AI-main\\Chiron-AI-main\\_shots\\消息树动画讲解_desktop.png",
+      "screenshotBytes": 70816,
+      "truncated": true,
+      "truncatedHint": "chrome CLI --screenshot 兜底：只截首屏，长页尾部未覆盖。",
+      "screenshotHint": "CDP 挂了，走 --screenshot 兜底：只有视口一屏，不是完整长页，也未按 --format / --max-width 转码降宽、未分片。图读不动时就只按 lint 字段改代码，别把没看过的截图当成看过了。",
+      "consoleErrors": null,
+      "consoleWarnings": null,
+      "resourceErrors": null,
+      "horizontalOverflow": null,
+      "structure": null,
+      "reportDegraded": true,
+      "reportHint": "chrome CLI 走 --screenshot 兜底路径（CDP 挂了）：拿不到 DOM，lint 与 structure 字段为 null。如需完整报告，请装 playwright：`pip install playwright && playwright install chromium`。"
+    },
+    "mobile": {
+      "screenshot": "D:\\develop\\develop\\code\\GitHub-Project\\Chiron-AI-main\\Chiron-AI-main\\_shots\\消息树动画讲解_mobile.png",
+      "screenshotBytes": 49001,
+      "truncated": true,
+      "truncatedHint": "chrome CLI --screenshot 兜底：只截首屏，长页尾部未覆盖。",
+      "screenshotHint": "CDP 挂了，走 --screenshot 兜底：只有视口一屏，不是完整长页，也未按 --format / --max-width 转码降宽、未分片。图读不动时就只按 lint 字段改代码，别把没看过的截图当成看过了。",
+      "consoleErrors": null,
+      "consoleWarnings": null,
+      "resourceErrors": null,
+      "horizontalOverflow": null,
+      "structure": null,
+      "reportDegraded": true,
+      "reportHint": "chrome CLI 走 --screenshot 兜底路径（CDP 挂了）：拿不到 DOM，lint 与 structure 字段为 null。如需完整报告，请装 playwright：`pip install playwright && playwright install chromium`。"
+    }
+  },
+  "engine": "chrome_cli",
+  "chromiumExec": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+  "engineDegraded": true,
+  "engineDegradedReason": "playwright 未装",
+  "elapsedSec": 75.19,
+  "schemaVersion": 2,
+  "status": "partial",
+  "engineInfo": {
+    "name": "chrome_cli",
+    "degraded": true,
+    "degradedReasons": [
+      "playwright 未装"
+    ]
+  },
+  "input": {
+    "original": "D:\\develop\\develop\\code\\GitHub-Project\\Chiron-AI-main\\Chiron-AI-main\\消息树动画讲解.html",
+    "resolvedPath": "D:\\develop\\develop\\code\\GitHub-Project\\Chiron-AI-main\\Chiron-AI-main\\消息树动画讲解.html",
+    "baseUrl": "file:///D:/develop/develop/code/GitHub-Project/Chiron-AI-main/Chiron-AI-main/%E6%B6%88%E6%81%AF%E6%A0%91%E5%8A%A8%E7%94%BB%E8%AE%B2%E8%A7%A3.html",
+    "protocol": "file",
+    "cwd": "D:\\develop\\develop\\code\\GitHub-Project\\Chiron-AI-main\\Chiron-AI-main",
+    "mediaMode": {
+      "reducedMotion": true
+    }
+  },
+  "artifacts": {
+    "screenshots": [
+      {
+        "viewport": "desktop",
+        "path": "D:\\develop\\develop\\code\\GitHub-Project\\Chiron-AI-main\\Chiron-AI-main\\_shots\\消息树动画讲解_desktop.png",
+        "size": 70816,
+        "visualCoverage": {
+          "complete": false,
+          "reason": "chrome CLI --screenshot 兜底：只截首屏，长页尾部未覆盖。"
+        }
+      },
+      {
+        "viewport": "mobile",
+        "path": "D:\\develop\\develop\\code\\GitHub-Project\\Chiron-AI-main\\Chiron-AI-main\\_shots\\消息树动画讲解_mobile.png",
+        "size": 49001,
+        "visualCoverage": {
+          "complete": false,
+          "reason": "chrome CLI --screenshot 兜底：只截首屏，长页尾部未覆盖。"
+        }
+      }
+    ]
+  },
+  "summary": {
+    "blocker": 0,
+    "error": 0,
+    "warning": 0,
+    "info": 0
+  },
+  "findings": [],
+  "notRunChecks": [
+    {
+      "check": "visualCoverage",
+      "reason": "capture_incomplete_or_truncated"
+    },
+    {
+      "ruleId": "consoleErrors",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "consoleWarnings",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "resourceErrors",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "horizontalOverflow",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "misalignedBlocks",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "unevenColumns",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "pseudoOverflow",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "orphanCardsWarning",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "squeezedTableColumns",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "fakeDisclosureBulletsWarning",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "edgeHuggingTextWarning",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "fixedWidthElementsWarning",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "timelineAlignmentIssues",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "timelineBrokenAxis",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "timelineDeadDotStyle",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "chartBadValues",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "chartHtmlInCanvasText",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "responsiveChartIssues",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "duplicateImagesWarning",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "stretchedImages",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "localImageWarnings",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "publishBrokenAssets",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "unsafeHrefRefsWarning",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "emojiUsageWarning",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "mobileFontIssues",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "textContrastIssues",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "invisibleAnimationsWarning",
+      "reason": "dom_report_unavailable"
+    },
+    {
+      "ruleId": "deadButtons",
+      "reason": "dom_report_unavailable"
+    }
+  ],
+  "prioritizedActions": [],
+  "reportPath": "D:\\develop\\develop\\code\\GitHub-Project\\Chiron-AI-main\\Chiron-AI-main\\_shots\\report.json"
+}
