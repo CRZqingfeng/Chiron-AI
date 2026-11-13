@@ -93,6 +93,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("workspace_run_command", "workspace", "app/workspace/tools.py"),
     # 工具网关（U11 P0-B）：MCP 工具超过阈值时才出现，用来按需发现长尾工具
     ToolSpec("search_tools", "gateway", "app/chat/tool_gateway.py", conditional=True),
+    ToolSpec("call_tool", "gateway", "app/chat/tool_gateway.py", conditional=True),
 )
 
 

@@ -191,10 +191,80 @@ def make_search_tools_tool(candidates: list[Any]) -> Any:
     )
 
 
+CALL_TOOL_NAME = "call_tool"
+"""按名字调用长尾工具的元工具。"""
+
+
+def make_call_tool_tool(candidates: list[Any]) -> Any:
+    """构造 `call_tool`：模型已知工具名、但该工具还没被激活时直接调用。
+
+    ## 为什么需要它
+
+    P0-B 之后，未激活的工具**不在** `request.tools` 里，模型看不到它的 schema。
+    但模型经常从系统提示、上文对话或用户原话里知道工具名（"用 github_create_issue 试一下"），
+    这时逼它先搜一遍是白费一次往返。
+
+    ## 安全边界（重要）
+
+    `candidates` 只包含 **MCP 工具**（`extra_tools`），所以 `call_tool` **够不到内置工具**。
+    模型就算写 `call_tool(name="workspace_run_command", args={"command": "rm -rf /"})`
+    也只会拿到「没有这个工具」。这条隔离由测试守着——
+    否则这就是一个绕过工作区审批的入口。
+
+    ## 审批
+
+    `call_tool` 自己进 `interrupt_on`，但**不是每次调用都弹窗**：
+    `SafeCommandAwareHITL` 会读 `args["name"]`，只有当目标工具在高危名单里才拦
+    （见 `app/chat/approval.py` 的 `_all_call_tools_exempt`）。
+    """
+    from langchain_core.tools import StructuredTool
+
+    by_name: dict[str, Any] = {_tool_name(t): t for t in (candidates or []) if _tool_name(t)}
+
+    async def _call(name: str, args: dict | None = None) -> str:
+        target = by_name.get(str(name or "").strip())
+        if target is None:
+            # 不在 MCP 工具里——包括内置工具（故意够不到）和拼错的名字
+            near = sorted(by_name)[:3]
+            hint = f"可用的有：{'、'.join(near)}…" if near else "当前没有外部工具。"
+            return f"错误：没有名为「{name}」的外部工具。{hint}也可以先调用 search_tools 查找。"
+
+        try:
+            result = await target.ainvoke(args if isinstance(args, dict) else {})
+        except Exception as e:  # noqa: BLE001 - 工具自身的失败要回给模型，不是崩掉整轮
+            logger.warning("call_tool 执行 {} 失败：{}", name, e)
+            return f"调用「{name}」失败：{e}"
+        return result if isinstance(result, str) else str(result)
+
+    return StructuredTool.from_function(
+        coroutine=_call,
+        name=CALL_TOOL_NAME,
+        description=(
+            "按名字调用一个外部工具。当你知道工具名（例如用户直接说了名字、"
+            "或上文提到过）但它的定义不在你的工具列表里时使用。\n"
+            "不知道用哪个工具时先用 search_tools 搜。\n"
+            "name 必须是完整工具名（如 github__create_issue，含服务前缀）。"
+        ),
+        args_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "完整工具名"},
+                "args": {
+                    "type": "object",
+                    "description": "该工具的参数对象，键名以工具定义为准",
+                },
+            },
+            "required": ["name"],
+        },
+    )
+
+
 GATEWAY_PROMPT_FRAGMENT = (
     "## 外部工具（按需发现）\n"
     "你接入的外部工具数量较多，为避免干扰，**没有全部列在你的工具列表里**。\n"
     "当前只列出常用工具；需要其它能力时，先调用 `search_tools`，"
     "用一句话说明要做的事，匹配到的工具会加入你的可用工具列表，下一轮直接调用即可。\n"
+    "如果你已经知道确切的工具名（用户直接说了，或上文提到过），"
+    "可以用 `call_tool` 直接调用，不必先搜。\n"
     "不要因为「工具列表里没有」就断定做不到——先搜一次再判断。"
 )
