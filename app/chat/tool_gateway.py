@@ -32,7 +32,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware
@@ -45,12 +44,6 @@ SEARCH_TOOL_NAME = "search_tools"
 """常驻的元工具名。它自己永远可见，否则模型搜过一次之后就再也搜不了。"""
 
 _DEFAULT_SEARCH_LIMIT = 8
-
-# 打分权重：名字命中比描述命中更有判别力。
-# 一个工具的描述常写得很长（"这是一个用于…的工具"），词面重合是噪音。
-_NAME_HIT_WEIGHT = 3.0
-_DESC_HIT_WEIGHT = 1.0
-
 
 def _gateway_mode() -> str:
     return str(getattr(settings, "TOOL_GATEWAY_MODE", "auto") or "auto").strip().lower()
@@ -81,10 +74,6 @@ def _tool_name(tool: Any) -> str:
     return str(getattr(tool, "name", "") or "")
 
 
-def _tool_description(tool: Any) -> str:
-    return str(getattr(tool, "description", "") or "")
-
-
 def _server_of(name: str) -> str:
     """从 `{server}__{tool}` 反解服务名；没有前缀时返回空串。
 
@@ -94,38 +83,6 @@ def _server_of(name: str) -> str:
     if "__" not in name:
         return ""
     return name.rsplit("__", 1)[0]
-
-
-def _tokens(text: str) -> list[str]:
-    """切成用于打分的词。
-
-    中文没有空格，按字符 bigram 切：`创建` 之类能命中，又不会因为整句匹配不上而归零。
-    英文按词切。
-    """
-    text = (text or "").lower()
-    words = re.findall(r"[a-z0-9_]+", text)
-    cjk = re.sub(r"[^\u4e00-\u9fff]", "", text)
-    grams = [cjk[i : i + 2] for i in range(max(0, len(cjk) - 1))]
-    return words + grams
-
-
-def score_candidate(query: str, name: str, description: str) -> float:
-    """候选工具的相关性打分。P0-B 是词面匹配，P0-C 换成 BM25 + 向量混合。"""
-    q = _tokens(query)
-    if not q:
-        return 0.0
-    name_l = (name or "").lower()
-    desc_l = (description or "").lower()
-    score = 0.0
-    for token in set(q):
-        if token in name_l:
-            score += _NAME_HIT_WEIGHT
-        if token in desc_l:
-            score += _DESC_HIT_WEIGHT
-    # 完整 query 直接出现在工具名里，几乎确定就是它
-    if len(query.strip()) >= 2 and query.strip().lower() in name_l:
-        score += 5.0
-    return score
 
 
 class VisibleToolsMiddleware(AgentMiddleware):
@@ -167,20 +124,18 @@ def make_search_tools_tool(candidates: list[Any]) -> Any:
     返回的是 L1 摘要（名字 + 一句话），**完整参数 schema 不给**——
     激活后下一轮模型会在工具列表里看到完整定义，不需要在这里重复一遍
     （那个 schema 就是我们要省的 token）。
+
+    排序交给 `app/chat/tool_search.ToolIndex`：字段加权 BM25 + destructive 降权。
+    P0-B 的纯词面匹配在工具数上规模后会把 `search`/`list` 这类高频词当成相关信号。
     """
     from langchain_core.tools import StructuredTool
 
+    from app.chat.tool_search import ToolIndex, build_docs
+
     limit_default = int(getattr(settings, "TOOL_GATEWAY_SEARCH_LIMIT", _DEFAULT_SEARCH_LIMIT) or 8)
 
-    catalog = [
-        {
-            "name": _tool_name(t),
-            "description": _tool_description(t),
-            "server": _server_of(_tool_name(t)),
-        }
-        for t in candidates
-        if _tool_name(t)
-    ]
+    docs = build_docs(candidates, server_of=_server_of)
+    index = ToolIndex(docs)
 
     def _one_line(text: str, limit: int = 90) -> str:
         text = " ".join((text or "").split())
@@ -191,32 +146,28 @@ def make_search_tools_tool(candidates: list[Any]) -> Any:
         if not q:
             return "错误：query 不能为空。请用一句话说明你想做什么。"
 
-        scored = [
-            (score_candidate(q, c["name"], c["description"]), c) for c in catalog
-        ]
-        scored = [x for x in scored if x[0] > 0]
-        scored.sort(key=lambda x: (-x[0], x[1]["name"]))
         n = max(1, min(int(limit or limit_default), limit_default))
-        top = [c for _, c in scored[:n]]
+        hits = index.rank(q, n)
+        top = [doc for _, doc in hits]
 
         if not top:
             # 空结果 = 模型断定「没有这个能力」然后开始编。所以给近似项：
             # 宁可给几个不对的，也让模型知道「工具是有的，只是没匹配上」。
-            fallback = sorted(catalog, key=lambda c: c["name"])[:3]
+            fallback = sorted(docs, key=lambda d: d.name)[:3]
             if not fallback:
                 return "当前没有可搜索的外部工具。请直接用已有工具或常识回答。"
             lines = [
                 f"未找到与「{q}」匹配的工具。你已知的工具里最接近的是：",
-                *[f"- {c['name']}：{_one_line(c['description'])}" for c in fallback],
+                *[f"- {d.name}：{_one_line(d.description)}" for d in fallback],
                 "如果都不对，请把你想做的事说得更具体一些再搜一次。",
             ]
             return "\n".join(lines)
 
-        activate_tools([c["name"] for c in top])
+        activate_tools([d.name for d in top])
         lines = [f"已找到 {len(top)} 个工具，它们已加入你本轮的可用工具列表："]
-        for c in top:
-            server = f"（{c['server']}）" if c["server"] else ""
-            lines.append(f"- {c['name']}{server}：{_one_line(c['description'])}")
+        for d in top:
+            server = f"（{d.server}）" if d.server else ""
+            lines.append(f"- {d.name}{server}：{_one_line(d.description)}")
         lines.append("现在可以直接调用它们，参数以工具定义为准。")
         return "\n".join(lines)
 

@@ -26,7 +26,6 @@ from app.chat.tool_gateway import (
     VisibleToolsMiddleware,
     gateway_active,
     make_search_tools_tool,
-    score_candidate,
 )
 from app.chat.tool_providers import build_tools
 from app.chat.tool_providers.base import ToolBuildContext
@@ -337,11 +336,17 @@ class SearchToolsTests(unittest.TestCase):
         self.assertIn("github__create_issue", get_activated_tools())
 
     def test_name_match_beats_description_match(self):
-        # 四个工具的描述里都含 "用途"，名字里只有 create 类含 create
-        self.assertGreater(
-            score_candidate("create", "github__create_issue", "用途"),
-            score_candidate("create", "github__list_issues", "create 相关用途"),
+        """名字命中强于描述命中（排序逻辑已迁到 tool_search，这里只验网关不冲突）。"""
+        from app.chat.tool_search import ToolDoc, ToolIndex
+
+        idx = ToolIndex(
+            [
+                ToolDoc(name="github__create_issue", description="用途"),
+                ToolDoc(name="github__list_issues", description="create 相关用途"),
+            ]
         )
+        ranked = [d.name for _, d in idx.rank("create")]
+        self.assertEqual(ranked[0], "github__create_issue")
 
     def test_empty_result_returns_nearest_instead_of_nothing(self):
         """空结果 = 模型断定"没有这个能力"然后开始编。必须给近似项。"""

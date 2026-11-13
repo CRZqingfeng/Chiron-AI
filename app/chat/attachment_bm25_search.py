@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import math
 import re
 from bisect import bisect_right # 二分查找
-from collections import Counter
 
 from app.chat.attachment_service import extract_attachment_plaintext
+from app.core.bm25 import bm25_scores
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]") # 中日韩字符正则表达式
 
@@ -29,48 +28,6 @@ def _tokenize(s: str) -> list[str]:
         except ImportError:
             return [ch for ch in s if not ch.isspace()]
     return [t for t in re.split(r"\s+", s) if t]
-
-
-def _bm25_scores(
-    corpus_tokens: list[list[str]],
-    query_tokens: list[str],
-    *,
-    k1: float = 1.5,
-    b: float = 0.75,
-) -> list[float]:
-    """
-    Okapi BM25，与常见实现一致；仅依赖标准库。
-    :param corpus_tokens: 语料库分词列表
-    :param query_tokens: 查询分词列表
-    :param k1: 调节因子
-    :param b: 调节因子
-    :return: 得分列表
-    """
-    n_docs = len(corpus_tokens)
-    if n_docs == 0:
-        return []
-    doc_lens = [len(d) for d in corpus_tokens]
-    avgdl = sum(doc_lens) / n_docs
-    if avgdl <= 0:
-        avgdl = 1.0
-    df: dict[str, int] = {}
-    for doc in corpus_tokens:
-        for w in set(doc):
-            df[w] = df.get(w, 0) + 1
-    idf = {w: math.log((n_docs - n + 0.5) / (n + 0.5)) for w, n in df.items()}
-    scores: list[float] = []
-    for idx, doc in enumerate(corpus_tokens):
-        dl = doc_lens[idx]
-        freq = Counter(doc)
-        sc = 0.0
-        for w in query_tokens:
-            f = freq.get(w, 0)
-            if f <= 0:
-                continue
-            denom = f + k1 * (1.0 - b + b * dl / avgdl)
-            sc += idf.get(w, 0.0) * (f * (k1 + 1.0)) / denom
-        scores.append(sc)
-    return scores
 
 
 def _chunk_spans(text: str, chunk_size: int, overlap: int) -> list[tuple[int, int]]:
@@ -205,7 +162,7 @@ def search_attachment_text_bm25(
     if not q_tok:
         return "错误：检索 query 分词后为空，请换一种关键词表述。"
 
-    scores = _bm25_scores(corpus_tokens, q_tok) # 全文 BM25 打分列表
+    scores = bm25_scores(corpus_tokens, q_tok) # 全文 BM25 打分列表
 
     k = max(1, min(int(top_k), 20)) # 返回的命中数量
     idx_sorted = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k] # 按得分排序的索引列表
