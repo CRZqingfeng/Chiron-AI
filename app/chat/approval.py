@@ -75,6 +75,7 @@ from typing import Any
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage
 
+from app.chat.tool_gateway import CALL_TOOL_NAME
 from app.log import logger
 from app.workspace.command_policy import SAFE_COMMAND_TOOL, is_safe_readonly_command, is_test_command
 
@@ -122,18 +123,42 @@ def apply_mcp_confirmation_gate(
 
 
 class SafeCommandAwareHITL(AgentMiddleware):
-    """只读命令免确认的审批中间件（`CHAT_APPROVAL_SAFE_COMMANDS_ENABLED` 控制启停）。"""
+    """按**参数**决定要不要审批的 HITL 中间件。
+
+    两类豁免（都是「本轮全部可免才整体跳过」）：
+
+    | 工具 | 判定依据 | 出处 |
+    |---|---|---|
+    | `workspace_run_command` | `args.command` 是否可证明只读 / 已授权的测试命令 | U10 P1-E |
+    | `call_tool` | `args.name` 指向的工具是否在高危名单里 | U11 P1-A |
+
+    ## 为什么还是「全豁免 / 全不豁免」
+
+    `call_tool` 天然适配这套模型：一次中断里可以带多个工具调用，只要**每一个**
+    目标工具都不需要确认，就把 `call_tool` 整个从 `interrupt_on` 里摘掉。
+    反过来（一条消息里既有安全又有不安全）就全都问一次——保守方向，
+    与 workspace 命令的取舍一致，也避免重写官方 `after_model` 那 90 行。
+
+    ## 降级
+
+    判定抛异常时**一律走原路径**（全部要确认）。宁可多问一次，不可静默放行。
+    """
 
     def __init__(
         self,
         interrupt_on: dict[str, Any],
         *,
         description_prefix: str = "Tool execution requires approval",
+        call_tool_confirm_names: set[str] | None = None,
     ) -> None:
         super().__init__()
         # 保留原始配置（含 bool 值），构造官方中间件时再让它自己规范化
         self.interrupt_on: dict[str, Any] = dict(interrupt_on or {})
         self.description_prefix = description_prefix
+        # `call_tool` 的目标工具里，哪些需要人工确认。
+        # 与 `interrupt_on` 分开传：前者是「哪些工具名要中断」，
+        # 这里是「元工具的参数指向谁时要中断」——两件事。
+        self.call_tool_confirm_names: frozenset[str] = frozenset(call_tool_confirm_names or ())
 
     # -- 判定 ---------------------------------------------------------------
 
@@ -150,18 +175,10 @@ class SafeCommandAwareHITL(AgentMiddleware):
         :return: True 表示可以整体跳过命令类审批；没有命令调用时返回 False
             （没有命令就没有需要跳过的，交给官方中间件处理其他工具）
         """
-        messages = state.get("messages") or []
-        last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
-        if last_ai is None or not getattr(last_ai, "tool_calls", None):
+        calls = self._calls_of(state, SAFE_COMMAND_TOOL)
+        if not calls:
             return False
-
-        commands = [
-            str(((tc.get("args") or {}).get("command")) or "")
-            for tc in last_ai.tool_calls
-            if tc.get("name") == SAFE_COMMAND_TOOL
-        ]
-        if not commands:
-            return False
+        commands = [str((tc.get("args") or {}).get("command") or "") for tc in calls]
 
         granted: bool | None = None
         for command in commands:
@@ -175,14 +192,38 @@ class SafeCommandAwareHITL(AgentMiddleware):
             return False
         return True
 
+    def _all_call_tools_exempt(self, state: dict[str, Any]) -> bool:
+        """本轮所有 `call_tool` 的目标工具是否都不需要确认。
+
+        读的是 `args["name"]`——元工具自身不在高危名单里，高危的是它**指向**谁。
+        这就是「按参数判定」与「按名字判定」的区别，也是 P1-A 的全部内容。
+
+        :return: True 表示可以整体跳过 call_tool 的审批；没有 call_tool 调用时返回 False
+        """
+        calls = self._calls_of(state, CALL_TOOL_NAME)
+        if not calls:
+            return False
+        for tc in calls:
+            target = str((tc.get("args") or {}).get("name") or "").strip()
+            if target in self.call_tool_confirm_names:
+                return False
+        return True
+
+    def _calls_of(self, state: dict[str, Any], tool_name: str) -> list[dict[str, Any]]:
+        messages = state.get("messages") or []
+        last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+        if last_ai is None or not getattr(last_ai, "tool_calls", None):
+            return []
+        return [tc for tc in last_ai.tool_calls if tc.get("name") == tool_name]
+
     # -- 钩子 ---------------------------------------------------------------
 
     def _build_delegate(self, state: dict[str, Any]) -> AgentMiddleware:
-        """按「本轮命令是否都可免确认」构造一个官方中间件实例。
+        """按「本轮哪些工具的调用可免确认」构造一个官方中间件实例。
 
         每次都新建：便宜（只是个配置容器），且不会修改自身状态，天然并发安全。
         """
-        # 延迟导入：见模块 docstring「为什么是包一层」
+        # 延迟导入：见模块 docstring 「为什么是包一层」
         from langchain.agents.middleware import HumanInTheLoopMiddleware
 
         config = dict(self.interrupt_on)
@@ -191,6 +232,11 @@ class SafeCommandAwareHITL(AgentMiddleware):
                 config.pop(SAFE_COMMAND_TOOL, None)
         except Exception as e:  # noqa: BLE001 - 判定故障必须退回「全部要确认」
             logger.warning("命令免确认判定失败，本轮恢复为全部需确认：{}", e)
+        try:
+            if self._all_call_tools_exempt(state):
+                config.pop(CALL_TOOL_NAME, None)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("call_tool 免确认判定失败，本轮恢复为全部需确认：{}", e)
         return HumanInTheLoopMiddleware(
             interrupt_on=config,
             description_prefix=self.description_prefix,

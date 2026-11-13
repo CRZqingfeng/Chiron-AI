@@ -17,7 +17,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.chat.tool_gateway import GATEWAY_PROMPT_FRAGMENT, gateway_active, make_search_tools_tool
+from app.chat.tool_gateway import (
+    GATEWAY_PROMPT_FRAGMENT,
+    gateway_active,
+    make_call_tool_tool,
+    make_search_tools_tool,
+)
 from app.chat.tool_providers.base import ToolBuildContext
 
 
@@ -32,7 +37,10 @@ class ToolGatewayProvider:
         return gateway_active(len(ctx.extra_tools or []))
 
     def build(self, ctx: ToolBuildContext) -> list[Any]:
-        return [make_search_tools_tool(list(ctx.extra_tools or []))]
+        tools = list(ctx.extra_tools or [])
+        # 两个元工具是一对：search 负责"不知道用哪个"，call 负责"知道名字但没加载"。
+        # 少了 call，模型知道名字时只能白跑一次 search。
+        return [make_search_tools_tool(tools), make_call_tool_tool(tools)]
 
     def prompt_fragments(self, ctx: ToolBuildContext) -> list[str]:
         return [GATEWAY_PROMPT_FRAGMENT]

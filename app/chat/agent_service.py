@@ -29,7 +29,7 @@ from app.core.memory_turns import apply_sliding_window_turns
 from app.core.message_codec import msg_content_to_str
 from app.chat.vision_expand import expand_messages_for_model
 from app.chat.storage import storage
-from app.chat.tool_gateway import VisibleToolsMiddleware, gateway_active
+from app.chat.tool_gateway import CALL_TOOL_NAME, VisibleToolsMiddleware, gateway_active
 from app.core.turn_runtime import (
     get_last_rag_context,
     make_session_scope,
@@ -407,6 +407,7 @@ def build_model_and_agent(
     workspace: Any = None,
     checkpointer: Any = None,
     interrupt_on: dict[str, Any] | None = None,
+    call_tool_confirm_names: set[str] | None = None,
 ) -> tuple[Any, Any]:
     """
     构建模型和智能体。检索工具始终挂载（本轮禁用由工具函数返回 TOOL_DISABLED_THIS_TURN）。
@@ -416,6 +417,8 @@ def build_model_and_agent(
         不注册工作区工具。工作区由调用方负责创建与 cleanup——本函数只管用。
     :param checkpointer: LangGraph checkpointer；为 None 时无法中断/恢复
     :param interrupt_on: 需要人工审批的工具名映射（`{工具名: True}`）；为 None 时不启用中断
+    :param call_tool_confirm_names: `call_tool` 指向这些工具时要人工确认（U11 P1-A）。
+        元工具自身不在 `interrupt_on` 的黑名单语义里——高危的是它**指向**谁。
     """
     # 解密
     plain = decrypt_api_key_safe(ua.api_key_ciphertext)
@@ -485,6 +488,14 @@ def build_model_and_agent(
         tools, exempt=[str(getattr(t, "name", "") or "") for t in (extra_tools or [])]
     )
 
+    # 工具网关开关只算一次，两处共用（中间件装配 + interrupt_on 合并）。
+    # ⚠️ call_tool 必须在**构造 HITL 中间件之前**并进 interrupt_on：
+    # 中间件是拿 interrupt_on 的拷贝工作的，之后再加对它无效
+    # （踩过：注册了 call_tool 工具但审批永远不触发）。
+    gateway_on = gateway_active(len(extra_tools or []))
+    if gateway_on and interrupt_on is not None:
+        interrupt_on = {**interrupt_on, CALL_TOOL_NAME: True}
+
     from langchain.agents import create_agent
     # 智能体人设提示词
     system_prompt = _compose_system_prompt(
@@ -526,12 +537,20 @@ def build_model_and_agent(
 
             # 只读命令免确认由 middleware 子类判定（按参数，不是按工具名），
             # 关掉开关即退回「所有命令都中断」的原行为。
-            middlewares.append(
-                mw_cls(
-                    interrupt_on=interrupt_on,
-                    description_prefix="以下工具需要你的确认才会执行",
-                )
-            )
+            #
+            # ⚠️ `call_tool_confirm_names` 只传给我们自己的子类：
+            # 官方 `HumanInTheLoopMiddleware` 不认识这个参数，传了会 TypeError，
+            # 而外层 except 会把它当成「审批装不上」→ 静默降级成**完全没有审批**。
+            # 这个坑踩过一次（`test_switch_off_falls_back_to_interrupt_everything` 抓到的）。
+            from app.chat.approval import SafeCommandAwareHITL as _OurHITL
+
+            mw_kwargs: dict[str, Any] = {
+                "interrupt_on": interrupt_on,
+                "description_prefix": "以下工具需要你的确认才会执行",
+            }
+            if mw_cls is _OurHITL:
+                mw_kwargs["call_tool_confirm_names"] = call_tool_confirm_names or set()
+            middlewares.append(mw_cls(**mw_kwargs))
         except Exception as e:  # noqa: BLE001
             # 审批中间件装不上时**必须显式降级**，不能静默：用户会以为有保护，实际没有
             logger.warning("审批中间件加载失败，本轮无人工确认（高危工具将被直接拒绝）：{}", e)
@@ -561,7 +580,7 @@ def build_model_and_agent(
     #
     # core 的算法是「全量工具 − MCP 工具」，而不是「内置工具清单」：
     # 清单会随 provider 启用条件漂移（联网关了、规划关了），减法不会有这个问题。
-    if gateway_active(len(extra_tools or [])):
+    if gateway_on:
         try:
             mcp_names = {str(getattr(t, "name", "") or "") for t in (extra_tools or [])}
             core_names = {
@@ -1703,6 +1722,10 @@ async def iter_chat_stream_events(
         workspace=workspace,
         checkpointer=checkpointer,
         interrupt_on=interrupt_on,
+        # call_tool 按参数判定需要这份名单：它指向高危工具时才中断（U11 P1-A）。
+        # 与 interrupt_on 是两件事——一个管"工具名要不要中断"，
+        # 一个管"元工具的参数指向谁时要中断"。
+        call_tool_confirm_names=mcp_confirm_names,
     )
 
     # ⑧ resume 前必须确认「断点还在」
