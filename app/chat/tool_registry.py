@@ -58,6 +58,14 @@ class ToolSpec:
     builtin: bool = True
     """是否计入 MCP 撞名白名单。MCP 动态工具不登记，故不需要 False。"""
 
+    conditional: bool = False
+    """是否是**条件产出**的工具（默认配置下不会出现在工具列表里）。
+
+    目前只有 `search_tools`（U11 工具网关）：它只在 MCP 工具超过阈值时产出。
+    标记出来是为了让「注册表声明 → 运行时必须存在」的覆盖性断言知道该放过它，
+    而不是把断言删弱——那条断言的目的是防止留下幽灵条目，不能为了一个新工具废掉。
+    """
+
 
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     # 会话附件（三件套）
@@ -83,6 +91,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("workspace_grep", "workspace", "app/workspace/tools.py"),
     ToolSpec("workspace_glob", "workspace", "app/workspace/tools.py"),
     ToolSpec("workspace_run_command", "workspace", "app/workspace/tools.py"),
+    # 工具网关（U11 P0-B）：MCP 工具超过阈值时才出现，用来按需发现长尾工具
+    ToolSpec("search_tools", "gateway", "app/chat/tool_gateway.py", conditional=True),
 )
 
 

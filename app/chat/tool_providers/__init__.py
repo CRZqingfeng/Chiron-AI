@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.chat.tool_providers import attachment, kb, mcp, memory, web, workspace
+from app.chat.tool_providers import attachment, gateway, kb, mcp, memory, web, workspace
 from app.chat.tool_providers.base import ToolBuildContext, ToolProvider
 
 TOOL_PROVIDERS: tuple[ToolProvider, ...] = tuple(
@@ -35,6 +35,7 @@ TOOL_PROVIDERS: tuple[ToolProvider, ...] = tuple(
             memory.PROVIDER,
             workspace.PROVIDER,
             mcp.PROVIDER,
+            gateway.PROVIDER,
         ),
         key=lambda p: p.order,
     )

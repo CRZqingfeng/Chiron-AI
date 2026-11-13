@@ -37,6 +37,7 @@ class _RequestState:
         "allow_knowledge_retrieval",
         "allow_web_search",
         "session_scope",
+        "activated_tools",
     )
 
     def __init__(self) -> None:
@@ -55,6 +56,9 @@ class _RequestState:
         # 「用户×智能体×会话」标识。审批中间件靠它判断「本会话是否已授权跑测试」——
         # 中间件只能拿到 state/runtime，而 `thread_id` 是 job_id 不是会话，拿不到这个。
         self.session_scope: str | None = None
+        # 本轮被「搜索」激活的长尾工具名。工具网关（`app/chat/tool_gateway.py`）
+        # 只把这些 + 常驻工具放进模型的可见列表；这里是激活结果的唯一存放处。
+        self.activated_tools: set[str] = set()
 
 
 _REQUEST_STATE: contextvars.ContextVar[_RequestState | None] = contextvars.ContextVar(
@@ -115,6 +119,30 @@ def set_session_scope(scope: str | None) -> None:
 
 def get_session_scope() -> str | None:
     return _state().session_scope
+
+
+def activate_tools(names: list[str] | set[str]) -> set[str]:
+    """把工具标记为「本轮可见」，返回激活后的全集。
+
+    为什么用 ContextVar 而不是塞进 graph state：这是**每轮都要重新决定**的临时状态，
+    塞进 state 会进 checkpoint，每轮多存一份同样的东西（U10 P1-E 的 `session_scope`
+    也是同一个理由）。
+    """
+    state = _state()
+    for name in names or ():
+        clean = str(name or "").strip()
+        if clean:
+            state.activated_tools.add(clean)
+    return set(state.activated_tools)
+
+
+def get_activated_tools() -> set[str]:
+    return set(_state().activated_tools)
+
+
+def reset_activated_tools() -> None:
+    """清空激活集。每轮对话开始时调用——上一轮搜出来的工具不该自动带进来。"""
+    _state().activated_tools = set()
 
 
 def set_turn_tool_policy(*, use_knowledge_retrieval: bool, use_web_search: bool) -> None:

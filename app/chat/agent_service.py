@@ -29,9 +29,11 @@ from app.core.memory_turns import apply_sliding_window_turns
 from app.core.message_codec import msg_content_to_str
 from app.chat.vision_expand import expand_messages_for_model
 from app.chat.storage import storage
+from app.chat.tool_gateway import VisibleToolsMiddleware, gateway_active
 from app.core.turn_runtime import (
     get_last_rag_context,
     make_session_scope,
+    reset_activated_tools,
     reset_tool_call_guards,
     set_rag_step_queue,
     set_session_scope,
@@ -551,6 +553,30 @@ def build_model_and_agent(
             )
         except Exception as e:  # noqa: BLE001 - 装不上就本轮没有清单，不阻断对话
             logger.warning("规划中间件加载失败（本轮无待办清单）：{}", e)
+
+    # 工具网关（U11 P0-B）：MCP 工具过多时，只让模型看到「常驻 + 本轮搜索激活的」。
+    #
+    # 必须放在 Todo 之后：上面审批失败那段会把 middlewares 整体重置，提前加会被抹掉
+    # （Todo 那段注释里记着同一个坑）。
+    #
+    # core 的算法是「全量工具 − MCP 工具」，而不是「内置工具清单」：
+    # 清单会随 provider 启用条件漂移（联网关了、规划关了），减法不会有这个问题。
+    if gateway_active(len(extra_tools or [])):
+        try:
+            mcp_names = {str(getattr(t, "name", "") or "") for t in (extra_tools or [])}
+            core_names = {
+                str(getattr(t, "name", "") or "")
+                for t in tools
+                if str(getattr(t, "name", "") or "") not in mcp_names
+            }
+            middlewares.append(VisibleToolsMiddleware(core_names))
+            logger.info(
+                "工具网关启用：{} 个 MCP 工具按需发现，常驻 {} 个工具",
+                len(mcp_names),
+                len(core_names),
+            )
+        except Exception as e:  # noqa: BLE001 - 装不上就退回全量，不能因此不给工具
+            logger.warning("工具网关中间件加载失败，本轮全量注入：{}", e)
 
     agent = create_agent(**agent_kwargs, middleware=middlewares or None)
     return agent, model
@@ -1574,6 +1600,9 @@ async def iter_chat_stream_events(
     # 会话标识：审批中间件靠它判断「本会话是否已授权跑测试类命令」。
     # 中间件拿不到 session（thread_id 是 job_id），只能从这里取。
     set_session_scope(make_session_scope(user_id, agent_id, session_id))
+    # 工具网关的激活集按「轮」清空：上一轮搜出来的工具不该自动带进这一轮。
+    # 不放在 build_model_and_agent 里清，是因为那里可能被 resume 路径复用同一份状态。
+    reset_activated_tools()
 
     # ① resume 入参校验
     # 重新生成的目标助手消息 id：显式传 target_message_id 时按它定位（MCP 续跑原地覆盖它）；
