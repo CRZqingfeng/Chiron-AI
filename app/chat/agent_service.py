@@ -1060,6 +1060,40 @@ async def _resolve_checkpointer(*, thread_id: str | None) -> tuple[Any, dict[str
     return checkpointer, _approval_tools_map()
 
 
+def _available_tool_names(agent: Any) -> set[str]:
+    """从图里取「tool node 认识哪些工具」。
+
+    取不到时返回空集，调用方的校验会自动跳过——**不能因为探测失败就拒绝恢复**，
+    那会把一个可用功能变成硬故障。
+    """
+    try:
+        node = (getattr(agent, "nodes", {}) or {}).get("tools")
+        bound = getattr(node, "bound", None)
+        names = getattr(bound, "tools_by_name", None)
+        if isinstance(names, dict):
+            return set(names.keys())
+    except Exception:  # noqa: BLE001
+        pass
+    return set()
+
+
+def _interrupted_tool_names(snapshot: Any) -> set[str]:
+    """断点里有哪些工具在等确认。与 `_count_pending_actions` 读同一份结构。"""
+    names: set[str] = set()
+    try:
+        for task in getattr(snapshot, "tasks", ()) or ():
+            for intr in getattr(task, "interrupts", ()) or ():
+                value = getattr(intr, "value", None)
+                if not isinstance(value, dict):
+                    continue
+                for req in value.get("action_requests") or []:
+                    if isinstance(req, dict) and req.get("name"):
+                        names.add(str(req["name"]))
+    except Exception:  # noqa: BLE001
+        return set()
+    return names
+
+
 async def _verify_resume_snapshot(
     agent: Any,
     *,
@@ -1076,6 +1110,10 @@ async def _verify_resume_snapshot(
     顺手数出待确认动作数：HITL middleware 强制
     `len(decisions) == len(interrupted_tool_calls)`，少一个就抛 ValueError；
     模型一次要调两个需审批工具时，只传 1 个决定会让恢复直接失败。
+
+    还检查「断点里等确认的工具现在还存不存在」：MCP 工具从 P0-A 起带命名空间前缀
+    （`github__create_issue`），升级前留下的断点里是裸名。名字对不上时 tool node
+    找不到工具，抛的是难看的运行期异常；这里提前拦下并说清原因。
     """
     if not is_resume or checkpointer is None:
         return 1, None
@@ -1085,6 +1123,17 @@ async def _verify_resume_snapshot(
         snapshot = None
     if snapshot is None or not getattr(snapshot, "next", None):
         return 1, "审批已过期或已完成，请重新发起提问"
+
+    pending = _interrupted_tool_names(snapshot)
+    available = _available_tool_names(agent)
+    if pending and available:
+        missing = pending - available
+        if missing:
+            listed = "、".join(sorted(missing)[:3])
+            return 1, (
+                f"这次审批涉及的工具已不存在（{listed}）。"
+                "可能是 MCP 工具改名或服务被移除，请重新发起提问。"
+            )
     return _count_pending_actions(snapshot), None
 
 
