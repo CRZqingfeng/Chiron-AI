@@ -136,13 +136,20 @@ class ActualRegistrationCoverageTests(unittest.TestCase):
         self.assertEqual(undeclared, set(), f"以下工具未在 TOOL_SPECS 登记：{sorted(undeclared)}")
 
     def test_declared_tools_exist_at_runtime(self):
-        """反向：注册表里声明的名字都该真实产出，避免留下幽灵条目。"""
+        """反向：注册表里声明的名字都该真实产出，避免留下幽灵条目。
+
+        `conditional=True` 的工具（目前只有 `search_tools`）默认配置下不产出，
+        单独排除——它的产出由 `tests/chat/test_tool_gateway.py` 覆盖。
+        """
         names = self._registered_names(
             workspace=self.ws,
             checkpointer=mock.Mock(),
             interrupt_on={"workspace_run_command": True},
         )
-        missing = tool_registry.BUILTIN_TOOL_NAMES - names
+        always_on = frozenset(
+            s.name for s in tool_registry.TOOL_SPECS if s.builtin and not s.conditional
+        )
+        missing = always_on - names
         self.assertEqual(
             missing, frozenset(), f"注册表声明了但未实际注册：{sorted(missing)}"
         )

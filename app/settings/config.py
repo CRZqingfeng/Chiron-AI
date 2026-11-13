@@ -190,6 +190,15 @@ class Settings(BaseSettings):
     # + 不许离开工作区）。关掉即回到「所有命令都要点一次」的旧行为。
     # 为什么默认开：每看一次目录都点一次确认，用户最终会把审批整体关掉，那更危险。
     CHAT_APPROVAL_SAFE_COMMANDS_ENABLED: bool = True
+    # ---- 工具网关（U11 P0-B）：MCP 工具太多时不把它们全塞进模型上下文 ----
+    # auto=超过阈值才启用按需发现；always_full=永远全量（旧行为）；always_discovery=永远按需。
+    # 默认 auto 且阈值未超时行为与改动前**完全一致**。
+    TOOL_GATEWAY_MODE: str = "auto"
+    # 触发阈值只看 MCP 工具数量（内置工具是"手脚"，每一轮都要用，永远全量）。
+    # 25 个 ≈ 8.3k tokens 的工具定义，再往上准确率开始明显下降。
+    TOOL_GATEWAY_MAX_MCP_TOOLS: int = 25
+    # 单次 search_tools 最多返回几个候选（L1 摘要，不含完整 schema）
+    TOOL_GATEWAY_SEARCH_LIMIT: int = 8
     # checkpoint 线程保留天数；0=不清理。审批恢复必须在同一次用户会话内完成，
     # 用户通常几分钟内就点确认，故 1 天足够（比快照表的 2 天更短）。
     CHAT_CHECKPOINT_RETENTION_DAYS: int = 1
