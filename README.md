@@ -15,7 +15,6 @@
   <img alt="vue" src="https://img.shields.io/badge/Vue-3.4-4FC08D?logo=vuedotjs&logoColor=white">
   <img alt="langgraph" src="https://img.shields.io/badge/LangGraph-Agent-1C3C3C">
   <img alt="milvus" src="https://img.shields.io/badge/Milvus-2.5-00A1EA">
-  <img alt="license" src="https://img.shields.io/badge/License-MIT-green">
 </p>
 
 ---
@@ -242,7 +241,3 @@ docker compose -f docker-compose.prod.yml up -d --build
 ## 致谢
 
 项目脚手架基于 [vue-fastapi-admin](https://github.com/mizhexiaoxiao/vue-fastapi-admin)。
-
-## License
-
-MIT
