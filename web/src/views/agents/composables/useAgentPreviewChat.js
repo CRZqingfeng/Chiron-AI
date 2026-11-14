@@ -1,5 +1,5 @@
 import { ref, unref } from 'vue'
-import { getToken } from '@/utils'
+import { getToken, ensureFreshToken, tryRefreshToken } from '@/utils'
 import {
   clearPreviewPendingJob,
   readPreviewChatJobSseStream,
@@ -88,7 +88,8 @@ export function useAgentPreviewChat({
   async function postJobAndConsumeStream({ regenerate, message, attachmentIds, assistantIdx }) {
     const aid = unref(agentId)
     const sid = unref(sessionId)
-    const token = getToken()
+    // 预览试聊也是原生 fetch，页面停留久了 access token 会静默过期，先换新鲜的
+    let token = await ensureFreshToken()
     if (!aid || !token) throw new Error('missing agent or token')
 
     let jobId
@@ -118,6 +119,13 @@ export function useAgentPreviewChat({
         })
 
       let postRes = await postJob()
+      if (postRes.status === 401) {
+        const fresh = await tryRefreshToken()
+        if (fresh) {
+          token = fresh
+          postRes = await postJob()
+        }
+      }
       if (postRes.status === 409) {
         // 旧任务刚被停止时占用锁释放存在短暂延迟，短延迟后重试一次创建；
         // 仍 409 说明有其他真实运行中的任务，回退到重连 existing_job_id
@@ -155,14 +163,21 @@ export function useAgentPreviewChat({
 
       activeJobId.value = jobId
 
-      const streamRes = await fetch(
-        `${baseApi}/user-agent/chat/jobs/${jobId}/stream?since_seq=${startSeq}`,
-        {
+      const openStream = () =>
+        fetch(`${baseApi}/user-agent/chat/jobs/${jobId}/stream?since_seq=${startSeq}`, {
           credentials: 'include',
           headers: { token },
           signal: ac.signal,
+        })
+
+      let streamRes = await openStream()
+      if (streamRes.status === 401) {
+        const fresh = await tryRefreshToken()
+        if (fresh) {
+          token = fresh
+          streamRes = await openStream()
         }
-      )
+      }
 
       if (!streamRes.ok) {
         let detail = `HTTP ${streamRes.status}`

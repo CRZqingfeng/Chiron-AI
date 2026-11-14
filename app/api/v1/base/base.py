@@ -95,9 +95,11 @@ async def refresh_access_token(request: Request):
     jti = (request.cookies.get(name) or "").strip()
     rec = consume_refresh_token(jti)
     if not rec:
-        resp = Fail(code=401, msg="登录已过期")
-        clear_refresh_cookie(resp)
-        return resp
+        # ⚠️ 这里**故意不清 cookie**。refresh token 是一次性消费的，
+        # 多标签页并发刷新时后到的请求拿到的是已被前一请求消费掉的 jti：
+        # 此时浏览器里刚被写入新的有效 cookie，清掉等于把两个标签页一起踢下线。
+        # 「凭证真的作废」由前端 logout 走 /base/logout 清理，那条路才是权威入口。
+        return Fail(code=401, msg="登录已过期")
     user = await User.filter(id=int(rec.get("user_id") or 0)).first()
     if not user or not user.is_active:
         resp = Fail(code=401, msg="登录已过期")
