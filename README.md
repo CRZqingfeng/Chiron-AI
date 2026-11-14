@@ -1,16 +1,22 @@
 <p align="center">
-  <a href="https://github.com/MarisaMagic/Chiron-AI">
-    <img alt="Chiron AI Logo" width="200" src="deploy/sample-picture/logo.svg">
-  </a>
+  <img alt="Chiron AI" width="120" src="deploy/sample-picture/logo.svg">
 </p>
 
 <h1 align="center">Chiron AI</h1>
 
-## 项目简介
+<p align="center">
+  基于 FastAPI + Vue 3 + LangChain + LangGraph 的智能体平台：可自建智能体、挂载多模态知识库、接入 MCP 外部工具，<br/>
+  并由一层受控工作区支撑「读写文件 / 执行命令」这类真正会改变环境的操作。
+</p>
 
-基于 FastAPI + Vue 3 + LangChain + LangGraph 的知识库对话智能体平台。支持自定义智能体（模型、提示词、知识库、MCP 工具）、多轮对话、长短期记忆、多模态知识库与会话附件理解。智能体基于 Tool-Use-Loop 自主规划，按需调用知识库检索、联网搜索、会话记忆、附件读写及 MCP 外部工具完成任务。
-
-使用项目模板: [vue-fastapi-admin](https://github.com/mizhexiaoxiao/vue-fastapi-admin)
+<p align="center">
+  <img alt="python" src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white">
+  <img alt="fastapi" src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white">
+  <img alt="vue" src="https://img.shields.io/badge/Vue-3.4-4FC08D?logo=vuedotjs&logoColor=white">
+  <img alt="langgraph" src="https://img.shields.io/badge/LangGraph-Agent-1C3C3C">
+  <img alt="milvus" src="https://img.shields.io/badge/Milvus-2.5-00A1EA">
+  <img alt="license" src="https://img.shields.io/badge/License-MIT-green">
+</p>
 
 ---
 
@@ -18,289 +24,185 @@
 
 ### 智能体中心
 
-![](/deploy/sample-picture/agent-hub.png)
+每个智能体独立配置模型、提示词、知识库、MCP 工具与记忆策略；支持分享给他人复用，也可从别人分享的智能体一键派生。
 
-### 智能体对话
+![智能体中心](deploy/sample-picture/v2/01-agent-hub.png)
 
-![](/deploy/sample-picture/agent-chat-1.png)
+### 多轮对话
 
-![](/deploy/sample-picture/agent-chat-3.png)
+Agent 走 Tool-Use-Loop 自主规划：按需调用知识库检索、联网搜索、会话记忆、附件读写、工作区操作。思考过程可折叠查看，底部可实时切换「知识库检索 / 联网搜索」开关。
 
-![](/deploy/sample-picture/agent-chat-4.png)
+![多轮对话](deploy/sample-picture/v2/02-agent-chat.png)
 
-### 知识库检索
+超出上下文预算时会自动压缩成摘要，原文不丢（append-only），AI 回复上方的「记忆已注入」标记即表示长期记忆参与本轮生成。
 
-![](/deploy/sample-picture/agent-kb-1.png)
+### 多模态知识库
 
-![](/deploy/sample-picture/agent-kb-2.png)
+支持 PDF / Word / Excel / TXT / Markdown，单文件上限 50 MB。文档按 L1/L2 父块 + 叶子块两级切分，图片单独抽取并建立向量索引，检索时文本与图片统一排序。
 
-![](/deploy/sample-picture/agent-kb-3.png)
-
-### 历史对话列表
-
-![](/deploy/sample-picture/agent-list.png)
-
-### 联网搜索
-
-![](/deploy/sample-picture/agent-web-search.png)
-
-![](/deploy/sample-picture/agent-web-search-2.png)
-
-### MCP 外部工具
-
-![](/deploy/sample-picture/agent-mcp-1.png)
-
-![](/deploy/sample-picture/agent-mcp-2.png)
-
-### 附件内容对话
-
-![](/deploy/sample-picture/agent-attach-1.png)
-
-![](/deploy/sample-picture/agent-attach-2.png)
-
-### 智能体共享
-
-![](/deploy/sample-picture/agent-share-1.png)
-
-![](/deploy/sample-picture/agent-share-2.png)
-
-### 暗色主题切换
-
-![](/deploy/sample-picture/agent-darkmode.png)
-
-![](/deploy/sample-picture/agent-darkmode-1.png)
-
-![](/deploy/sample-picture/agent-darkmode-2.png)
+![知识库](deploy/sample-picture/v2/03-agent-kb.png)
 
 ---
 
+## 技术架构
 
-## 部署方式 1: 本地启动项目（适用于开发者）
-
-### 后端
-
-启动项目需要以下环境：
-- Python 3.11
-
-1. 创建虚拟环境
-
-```sh
-python3 -m venv venv
+```
+┌──────────────────────────────────────────────────────────┐
+│  Vue 3 + Vite + Pinia        对话 / 智能体 / 知识库 / 管理  │
+└───────────────────────────┬──────────────────────────────┘
+                            │ SSE（可断线重连）
+┌───────────────────────────▼──────────────────────────────┐
+│  FastAPI                                                  │
+│  ├── app/chat     Agent 主链路 · 审批 · 记忆 · 压缩         │
+│  ├── app/kb       RAG 子图 · 多模态入库 · 检索             │
+│  ├── app/workspace 受控工作区（Docker / 本地双后端）        │
+│  └── app/mcp_client MCP 服务接入与工具策略                 │
+└───────┬──────────────┬──────────────┬────────────────────┘
+        │              │              │
+   PostgreSQL       Redis          Milvus + MinIO
+   会话/元数据    缓存/配额/锁     向量库 / 对象存储
 ```
 
-或者使用 conda 创建虚拟环境（需要提前配置好 [Anaconda](https://www.anaconda.com/download)）:
+| 层次 | 关键实现 |
+|---|---|
+| Agent 编排 | LangChain + LangGraph，支持中断-恢复（checkpointer 持久化） |
+| RAG | LangGraph 子图：检索 → 打分 → 条件扩展（HyDE / step-back） |
+| 记忆 | 短期滑动窗口 + 长期向量记忆（Milvus dense + BM25 sparse） |
+| 工作区 | Docker 沙箱 / 本地目录双后端，Docker 不可用时自动降级 |
+| 实时性 | 对话走异步 Job + SSE，刷新页面可续传，不会丢回复 |
 
-```sh
-conda create -n Chiron-AI python=3.11 -y
+---
+
+## 几个设计决策
+
+### 1. 工作区不是「给个 shell」，是「给个受控环境」
+
+`open_workspace()` 按 `{uid}/{aid}/{sid}` 三段分目录做租户隔离，后端可在 Docker 沙箱与本地目录之间切换：
+
+- **Docker 不可用时自动降级 local 并记 warning** —— 不能因为沙箱挂了就让整个对话失败
+- **`execute` 已实现但不作为工具暴露** —— 审批中断落地之前，模型不该具备执行任意 shell 的能力
+
+### 2. 审批中间件：包住 LangChain 的重排层
+
+LangChain 的 `HumanInTheLoopMiddleware` 只按**工具名**判定是否中断，`interrupt_on` 没有「按参数再判断」的钩子。结果是一旦登记 `workspace_run_command`，连 `ls -la` 都要用户点一次确认。
+
+做法是在 `after_model` 里加一层前置判断：这条 AI 消息里的命令调用**是否可证明全部只读**——
+
+- 全部只读 → 从 `interrupt_on` 里摘掉该工具，交给官方中间件
+- 有任何一条不安全 → 原样交给官方中间件，**全部命令一起中断**
+
+只改「要不要中断」这一件事，其余全部沿用官方实现。
+
+### 3. 上下文隔离靠 ContextVar，不靠传参
+
+RAG 检索步骤、工具配额这些状态被 `app/chat`、`app/kb`、`app/core` 三方共用。放在 `app/chat` 下会让知识库反向依赖对话域，所以下沉到 `app/core/turn_runtime.py`。
+
+状态挂在**按请求创建**的 `_RequestState` 上，经 `ContextVar` 分发。`asyncio.create_task` / `to_thread` / `run_in_executor` 都会复制当前 contextvars 上下文（同一对象引用），同步路径整体跑在单线程内——因此并发请求互不可见，杜绝跨用户的 RAG 步骤串扰。
+
+### 4. 会话压缩：摘要进 metadata，原文永不删
+
+上下文按字符预算触发压缩，摘要写进 session metadata，原文窗口保持 append-only。最多保留 4 个压缩态，避免反复压缩把信息磨平。这样既能控制 token，又保留可回溯的原始对话。
+
+### 5. 知识库分层：父块给模型，叶子块给检索
+
+检索命中的是叶子块（600 字左右），但送给模型的是它的父块——命中精度靠小块，上下文完整性靠大块。图片单独建索引，检索时与文本块统一打分排序，避免「图文混排的文档只能答一半」。
+
+---
+
+## 快速开始
+
+### 环境要求
+
+Python 3.11+ · Node 18+ · pnpm · Docker Desktop
+
+### 1. 启动依赖服务
+
+```bash
+docker compose up -d      # PostgreSQL / Redis / etcd / MinIO / Milvus
 ```
 
-2. 激活虚拟环境
+### 2. 配置环境变量
 
-```sh
-source venv/bin/activate  # Linux/Mac
-# 或
-.\venv\Scripts\activate  # Windows
+```bash
+cp .env.example .env
 ```
 
-如果使用的是 conda 虚拟环境:
+至少填写：`SECRET_KEY`（`openssl rand -hex 32`）、`INITIAL_ADMIN_PASSWORD`、`EMBEDDING_API_KEY`。
 
-```sh
-conda activate Chiron-AI
-```
+启用重排需再填 `RERANK_API_KEY`；国内联网搜索可填 `WEB_SEARCH_BOCHA_API_KEY`。完整项见 `.env.example` 注释。
 
-3. 安装依赖
+### 3. 启动后端
 
-```sh
+```bash
+python -m venv venv
+source venv/bin/activate        # Windows: .\venv\Scripts\activate
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-```
-
-4. 启动后端服务
-
-建议预先启动 docker [数据库服务](#数据库服务)
-
-```sh
 python run.py
 ```
 
-后端启动成功输出: 
+默认监听 `127.0.0.1:19999`（`.env` 的 `UVICORN_PORT` 可改），API 文档见 `http://localhost:19999/docs`。
 
-```sh
-2026-04-29 16:27:48 - INFO - Will watch for changes in these directories: [项目路径]
-2026-04-29 16:27:48 - INFO - Uvicorn running on http://0.0.0.0:9999 (Press CTRL+C to quit)
-2026-04-29 16:27:48 - INFO - Started reloader process [32712] using WatchFiles
-2026-04-29 16:27:52 - INFO - Started server process [25192]
-2026-04-29 16:27:52 - INFO - Waiting for application startup.
-2026-04-29 16:27:52 - INFO - Application startup complete.
-```
+### 4. 启动前端
 
-访问 http://localhost:9999/docs 可查看API文档
-
----
-
-### 前端
-
-启动项目前端环境建议：
-- node v18.8.0+
-
-1. 进入前端目录
-
-```sh
+```bash
 cd web
-```
-
-2. 安装依赖 
-
-建议使用 pnpm: https://pnpm.io/zh/installation
-
-```sh
-npm i -g pnpm # 已安装可忽略
-pnpm i # 或者 npm i
-```
-
-3. 启动
-
-```sh
+pnpm i
 pnpm dev
 ```
 
-前端启动成功输出：
+打开 `http://localhost:3200`，用 `.env` 里的 `INITIAL_ADMIN_USERNAME` / `INITIAL_ADMIN_PASSWORD` 登录。
 
-```sh
-VITE v5.4.21  ready in 20287 ms
-
-➜  Local:   http://localhost:3100/                                                                                 
-➜  Network: http://169.254.128.15:3100/                                                                               
-➜  Network: http://169.254.47.198:3100/                                                                               
-➜  Network: http://192.168.32.245:3100/                                                                               
-➜  Network: http://172.17.128.1:3100/                                                                                 
-➜  press h + enter to show help   
-```
+> 想验一遍全链路是否正常：`python scripts/verify_chat_e2e.py`（登录 → 发起对话 → 轮询 → 判定）。
 
 ---
 
-### 数据库服务
+## 项目结构
 
-使用 docker 部署 PostgreSQL、Redis、Milvus 镜像服务（需要先安装 [Docker](https://www.docker.com/products/docker-desktop/)）。
-
-docker 配置脚本: `docker-compose.yml`
-
-```sh
-# 读取当前目录下的 docker-compose.yml 文件，并启动其中定义的所有服务。
-# 如果本地没有数据库镜像文件会先拉取镜像
-docker compose up -d
+```
+app/
+├── api/            FastAPI 路由（v1）
+├── chat/           Agent 主链路：审批 / 记忆 / 压缩 / 附件 / 工具网关
+├── kb/             RAG 子图 / 多模态入库 / 父块存储 / 图片索引
+├── workspace/      受控工作区（Docker 沙箱 + 本地目录）
+├── mcp_client/     MCP 服务接入、工具策略与预设
+├── core/           运行时状态 / DB / 缓存 / 对象存储 / 异常
+├── models/         Tortoise ORM 模型
+└── settings/       配置（pydantic-settings）
+web/
+├── src/views/      agent-hub / agent-chat / agents / system / profile
+└── src/utils/      请求封装 / 认证 / 存储
+scripts/            运维与回归脚本（端到端对话、重建索引、重置密码）
+deploy/             Dockerfile、nginx 配置、示例截图
 ```
 
-启动数据库镜像服务成功输出:
-
-![](deploy/sample-picture/docker-compose-up.png)
-
-停止所有数据库服务:
-
-```sh
-docker compose stop
-```
-
-停止数据库镜像服务成功输出:
-
-![](deploy/sample-picture/docker-compose-stop.png)
-
-二次开发：用上面的命令只起数据库，再分别 `python run.py` 与 `pnpm dev`。若要把前后端也打进镜像、一条命令访问网页，见下方「快速一键部署」。
+代码规模：后端约 170 个 Python 文件 / 3 万行，前端约 110 个组件。
 
 ---
 
-### 环境变量配置
+## 生产部署
 
-将仓库根目录的 `.env.example` 复制为 `.env`，再填写密钥（填好的 `.env` 勿提交仓库）：
+`docker-compose.prod.yml` 会把前端打包成静态文件交给 Nginx、后端单独一个容器，Nginx 反代 `/api/v1`：
 
-```sh
-# Linux / macOS
-cp .env.example .env
-
-# Windows PowerShell
-Copy-Item .env.example .env
-```
-
-至少填写：
-
-- `SECRET_KEY`（生成：`openssl rand -hex 32`）
-- `INITIAL_ADMIN_PASSWORD`（至少 8 位，含字母与数字）
-- `EMBEDDING_API_KEY`
-- 启用知识库重排时再填 `RERANK_API_KEY`
-- 国内联网搜索可填 `WEB_SEARCH_BOCHA_API_KEY`（默认同时启用博查 Semantic Reranker）
-
-完整项与注释见 `.env.example`。公网上线请再对照下方「公网部署清单」。
-
----
-
-## 部署方式2: 一键快速部署（Docker）
-
-### 运行命令
-
-前置：已安装 [Docker Desktop](https://www.docker.com/products/docker-desktop/)，并已按上一节准备好根目录 `.env`（至少填写 `SECRET_KEY`、`INITIAL_ADMIN_PASSWORD`、`EMBEDDING_API_KEY`）。
-
-在项目根目录运行命令：
-
-```sh
-# 首次或代码有变更时加 --build
+```bash
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-启动成功：
+访问 `http://localhost:8088`（端口由 `.env` 的 `WEB_PORT` 控制）。
 
-![](deploy/sample-picture/docker-compose-prod.png)
+上线前务必核对：
 
-启动成功后浏览器打开 **http://localhost:8088** 即可访问（端口可用 `.env` 里的 `WEB_PORT` 更改）。
-
----
-
-### 常用命令与说明
-
-一键快速部署通过把 Vue 打成静态文件由 Nginx 托管，FastAPI 单独一个容器；Nginx 将 `/api/v1` 反代到后端（和本地 `pnpm dev` 的 Vite 代理同一思路）。数据库仍用现有 `docker-compose.yml`。
-
-首次构建会拉 Python / Node / Milvus 等镜像，并执行 `pnpm build` 与 `pip install`，可能需要十几分钟。之后再启动会快很多。
-
-常用命令：
-
-```sh
-# 查看状态
-docker compose -f docker-compose.prod.yml ps
-
-# 只停前后端，数据库继续跑（方便切回本地 python / pnpm 开发）
-docker compose -f docker-compose.prod.yml stop backend frontend
-
-# 停止全部（含数据库）
-docker compose -f docker-compose.prod.yml stop
-
-# 看后端日志
-docker compose -f docker-compose.prod.yml logs -f backend
-```
-
-说明：
-
-- 已在跑 `docker compose up -d`（仅数据库）时，再执行上面的 prod 命令只会补起 `backend` / `frontend`，数据目录共用 `volumes/`。
-- 容器内会覆盖 `.env` 里的本机地址：`DATABASE_URL` / `REDIS_URL` / `MILVUS_HOST` 改为 Docker 服务名，`UVICORN_HOST=0.0.0.0`。本机开发不受影响。
-- 后端不对外暴露 9999；浏览器只访问 Nginx 的 `WEB_PORT`。
-- 公网请把 `PROD_PUBLIC_API_BASE` 设为站点根地址（如 `https://your.domain`），并继续核对下面的清单。
-
-相关文件：`deploy/Dockerfile.backend`、`deploy/Dockerfile.frontend`、`deploy/nginx.conf`、`docker-compose.prod.yml`。
-
-数据库结构/数据补丁：启动时自动应用版本化补丁（见 [`app/core/schema_patches.py`](app/core/schema_patches.py)，按 `schema_patch_log` 表去重）。
+- `DEBUG=false`（否则 Header `token=dev` 可绕过 JWT）
+- `ALLOW_PUBLIC_REGISTRATION=false`、`DOCS_ENABLED=false`
+- 生产环境单独配置 `API_KEY_ENCRYPTION_KEY`，不要只靠 `SECRET_KEY` 派生
+- 数据库与对象存储端口保持在 `127.0.0.1`，不要映射到公网
+- 前置 Nginx/Caddy 做 HTTPS 反代
 
 ---
 
-## 公网部署清单
+## 致谢
 
-上线前请核对（本仓库默认面向本机开发）：
+项目脚手架基于 [vue-fastapi-admin](https://github.com/mizhexiaoxiao/vue-fastapi-admin)。
 
-- `DEBUG=false`（否则 Header `token=dev` 可跳过 JWT）
-- `ALLOW_PUBLIC_REGISTRATION=false`
-- `DOCS_ENABLED=false`
-- `ALLOW_PRIVATE_UPSTREAM_URLS=false`
-- `UVICORN_HOST=127.0.0.1`，前面用 Nginx/Caddy 做 HTTPS 反代（`docker-compose.prod.yml` 已在容器内用 Nginx 反代，且不把 9999 映射到宿主机）
-- `AUTH_TRUST_X_FORWARDED_FOR` 仅在**可信**反代之后开启；nginx 须覆盖（而非追加）`X-Forwarded-For`
-- 生产单独配置 `API_KEY_ENCRYPTION_KEY`，不要只靠 `SECRET_KEY` 派生
-- Access JWT 默认 15 分钟；刷新令牌为 HttpOnly cookie（见 `.env.example`）
-- `.env` 必须设置 `POSTGRES_PASSWORD`、`MINIO_APP_ROOT_PASSWORD`；compose 不再内置弱口令
-- `docker compose` 端口已绑定 `127.0.0.1`；不要把数据库/对象存储端口映射到公网
-- 可选：`MILVUS_TOKEN`（已开鉴权的 Milvus / Zilliz）
-- Redis 不可用时，非 DEBUG 环境登录/注册会返回 503（fail-closed），请保证 Redis 可用
+## License
+
+MIT
