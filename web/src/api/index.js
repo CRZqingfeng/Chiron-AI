@@ -1,4 +1,4 @@
-import { request, getToken } from '@/utils'
+import { request, ensureFreshToken, tryRefreshToken } from '@/utils'
 
 export default {
   login: (data) => request.post('/base/access_token', data, { noNeedToken: true }),
@@ -91,24 +91,29 @@ export default {
   },
   /**
    * 拉取会话附件二进制（带 token 请求头），用于 img 等无法用 axios 默认 JSON 解析的场景。
+   * 原生 fetch 不走 axios 拦截器，401 必须自己续期重试，否则页面停留久了图片全裂。
    */
-  fetchChatAttachmentPreviewBlob: (agentId, sessionId, attachmentId) => {
+  fetchChatAttachmentPreviewBlob: async (agentId, sessionId, attachmentId) => {
     const base = import.meta.env.VITE_BASE_API || '/api/v1'
     const q = new URLSearchParams({
       agent_id: String(agentId),
       session_id: String(sessionId || 'default_session'),
       attachment_id: String(attachmentId),
     })
-    const headers = {}
-    const token = getToken()
-    if (token) headers.token = token
-    return fetch(`${base}/user-agent/chat/attachments/preview?${q}`, {
-      credentials: 'include',
-      headers,
-    }).then(async (res) => {
-      if (!res.ok) throw new Error(String(res.status))
-      return res.blob()
-    })
+    const doFetch = (token) =>
+      fetch(`${base}/user-agent/chat/attachments/preview?${q}`, {
+        credentials: 'include',
+        headers: token ? { token } : {},
+      })
+    let token = await ensureFreshToken()
+    if (!token) throw new Error('401')
+    let res = await doFetch(token)
+    if (res.status === 401) {
+      token = await tryRefreshToken()
+      if (token) res = await doFetch(token)
+    }
+    if (!res.ok) throw new Error(String(res.status))
+    return res.blob()
   },
   deleteAgentChatSession: ({ agent_id, session_id }) =>
     request.delete(`/user-agent/chat/sessions/${encodeURIComponent(session_id)}`, {
@@ -127,23 +132,27 @@ export default {
    * 下载用 fetch + token 头，与 `fetchChatAttachmentPreviewBlob` 同一套路子：
    * axios 会把二进制当 JSON 解析，而且 `<a href>` 带不了请求头。
    */
-  fetchAgentWorkspaceFileBlob: ({ agent_id, session_id, path }) => {
+  fetchAgentWorkspaceFileBlob: async ({ agent_id, session_id, path }) => {
     const base = import.meta.env.VITE_BASE_API || '/api/v1'
     const q = new URLSearchParams({
       agent_id: String(agent_id),
       session_id: String(session_id || 'default_session'),
       path: String(path || ''),
     })
-    const headers = {}
-    const token = getToken()
-    if (token) headers.token = token
-    return fetch(`${base}/user-agent/chat/workspace/download?${q}`, {
-      credentials: 'include',
-      headers,
-    }).then(async (res) => {
-      if (!res.ok) throw new Error(String(res.status))
-      return res.blob()
-    })
+    const doFetch = (token) =>
+      fetch(`${base}/user-agent/chat/workspace/download?${q}`, {
+        credentials: 'include',
+        headers: token ? { token } : {},
+      })
+    let token = await ensureFreshToken()
+    if (!token) throw new Error('401')
+    let res = await doFetch(token)
+    if (res.status === 401) {
+      token = await tryRefreshToken()
+      if (token) res = await doFetch(token)
+    }
+    if (!res.ok) throw new Error(String(res.status))
+    return res.blob()
   },
   /**
    * 跨会话记忆（U7）。作用域是「用户 × 智能体」，所以两个接口都要 agent_id。

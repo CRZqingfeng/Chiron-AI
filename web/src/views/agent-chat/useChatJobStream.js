@@ -1,5 +1,5 @@
 import { onMounted, onUnmounted, ref } from 'vue'
-import { getToken } from '@/utils'
+import { getToken, ensureFreshToken, tryRefreshToken } from '@/utils'
 import { applyThinkingItem, upsertTodoItem } from '@/utils/agentChatThinking'
 import { useAgentSidebarStore, useRecentAgentsStore } from '@/store'
 
@@ -434,7 +434,7 @@ export function useChatJobStream({
 
   async function postChatJobAndConsumeStream({
     agentId,
-    token,
+    token: initialToken,
     regenerate,
     message,
     attachmentIds,
@@ -443,6 +443,9 @@ export function useChatJobStream({
     resumeThreadId = null,
     resumeDecision = null,
   }) {
+    // 调用方传进来的是「点发送那一刻」的 token 快照，页面停留久了它已经过期。
+    // 这里统一换一次新鲜的：未过期则零成本返回，过期才真的发一次 /base/refresh。
+    let token = (await ensureFreshToken()) || initialToken
     let jobId
     let startSeq = 0
     streamStoppedByUser.value = false
@@ -477,6 +480,15 @@ export function useChatJobStream({
         })
 
       let postRes = await postJob()
+      // 兜底：本地判断没过期但服务端已过期（时钟漂移 / 刚被别的请求轮换），
+      // 续一次再重发。只重试一次，避免死循环。
+      if (postRes.status === 401) {
+        const fresh = await tryRefreshToken()
+        if (fresh) {
+          token = fresh
+          postRes = await postJob()
+        }
+      }
       if (postRes.status === 409) {
         await new Promise((resolve) => setTimeout(resolve, 300))
         postRes = await postJob()
@@ -517,14 +529,22 @@ export function useChatJobStream({
 
       activeJobId.value = jobId
 
-      const streamRes = await fetch(
-        `${baseApi}/user-agent/chat/jobs/${jobId}/stream?since_seq=${startSeq}`,
-        {
+      // 闭包读的是上面那个 let token，续期后重发会自动带上新值
+      const openStream = () =>
+        fetch(`${baseApi}/user-agent/chat/jobs/${jobId}/stream?since_seq=${startSeq}`, {
           credentials: 'include',
           headers: { token },
           signal: ac.signal,
+        })
+
+      let streamRes = await openStream()
+      if (streamRes.status === 401) {
+        const fresh = await tryRefreshToken()
+        if (fresh) {
+          token = fresh
+          streamRes = await openStream()
         }
-      )
+      }
 
       if (!streamRes.ok) {
         let detail = `HTTP ${streamRes.status}`
@@ -554,17 +574,31 @@ export function useChatJobStream({
 
   async function maybeResumePendingChatJob() {
     const agentId = agent.value?.id
-    const token = getToken()
-    if (!agentId || !token || sending.value || pageLoading.value || loadError.value) return
+    if (!agentId || sending.value || pageLoading.value || loadError.value) return
+
+    // 断点恢复也要先换新鲜 token：拿过期 token 去查 job 会拿到 401，
+    // 被当成「任务不存在」把 sessionStorage 里的断点清掉，恢复就彻底丢了。
+    let token = await ensureFreshToken()
+    if (!token) return
 
     const pj = readPendingChatJob(agentId, sessionId.value)
     if (!pj?.job_id) return
 
-    try {
-      const metaRes = await fetch(`${baseApi}/user-agent/chat/jobs/${pj.job_id}`, {
+    const fetchMeta = () =>
+      fetch(`${baseApi}/user-agent/chat/jobs/${pj.job_id}`, {
         credentials: 'include',
         headers: { token },
       })
+
+    try {
+      let metaRes = await fetchMeta()
+      if (metaRes.status === 401) {
+        const fresh = await tryRefreshToken()
+        if (fresh) {
+          token = fresh
+          metaRes = await fetchMeta()
+        }
+      }
       if (!metaRes.ok) {
         clearPendingChatJob(agentId, sessionId.value)
         return
@@ -632,14 +666,21 @@ export function useChatJobStream({
     activeJobId.value = pj.job_id
     activeAssistantIdx.value = idx
     try {
-      const streamRes = await fetch(
-        `${baseApi}/user-agent/chat/jobs/${pj.job_id}/stream?since_seq=${sinceSeq}`,
-        {
+      const openStream = () =>
+        fetch(`${baseApi}/user-agent/chat/jobs/${pj.job_id}/stream?since_seq=${sinceSeq}`, {
           credentials: 'include',
           headers: { token },
           signal: ac.signal,
+        })
+
+      let streamRes = await openStream()
+      if (streamRes.status === 401) {
+        const fresh = await tryRefreshToken()
+        if (fresh) {
+          token = fresh
+          streamRes = await openStream()
         }
-      )
+      }
       if (!streamRes.ok) {
         clearPendingChatJob(agentId, sessionId.value)
         return
