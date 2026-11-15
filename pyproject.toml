@@ -21,3 +21,8 @@ ignore = ["E501", "F403", "F405"]
 "app/chat/web_search_tool.py" = ["F401"]
 "app/chat/web_search_rerank.py" = ["F401"]
 "app/chat/web_image_search.py" = ["F401"]
+# 基线生成脚本必须先 sys.path 注入项目根再导入 app，E402 属预期行为
+"scripts/gen_tool_prompt_baseline.py" = ["E402"]
+# RAGAS 评测/报告脚本为一次性分析工具，不参与运行时；lambda 简写、单字母循环变量、
+# 中间结果变量在此可接受，不强制改造
+"scripts/ragas/*" = ["E731", "E741", "F841", "E702"]

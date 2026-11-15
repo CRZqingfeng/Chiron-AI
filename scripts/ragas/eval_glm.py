@@ -16,7 +16,12 @@
   python eval_glm.py --in=collected_p6.json --out=ragas_glm_p6.json --conc=6
   python eval_glm.py --in=... --out=... --metrics=faithfulness,context_precision  # 只跑子集
 """
-import asyncio, json, os, re, sys, time
+import asyncio
+import json
+import os
+import re
+import sys
+import time
 from openai import AsyncOpenAI
 from ragas.llms import llm_factory
 from ragas.embeddings.base import embedding_factory

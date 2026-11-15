@@ -3,7 +3,11 @@
 
 数据来源：.tmp/ragas/glm_n1.json / glm_n2.json（eval_glm.py 的产物）
 """
-import json, statistics as st, html, sys, os
+import json
+import statistics as st
+import html
+import sys
+import os
 
 META = [
     ("faithfulness", "忠实度", 0.90, "high", "回答里的每句结论，注入的资料是否支撑得住"),

@@ -13,7 +13,11 @@
   node scripts/retrieval-only.mjs --topk=6 --dump=.tmp/ragas/dump_k6.json
   python .tmp/ragas/eval_context_only.py --dump=.tmp/ragas/dump_k6.json --tag=k6
 """
-import asyncio, json, os, re, sys, time
+import asyncio
+import json
+import os
+import sys
+import time
 import statistics as st
 from openai import AsyncOpenAI
 from ragas.llms import llm_factory
