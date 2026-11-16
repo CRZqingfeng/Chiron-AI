@@ -239,10 +239,6 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 ---
 
-## 致谢
-
-项目脚手架基于 [vue-fastapi-admin](https://github.com/mizhexiaoxiao/vue-fastapi-admin)。
-
 ## License
 
 [MIT](LICENSE) © 2026 CRZ
